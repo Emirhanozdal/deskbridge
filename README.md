@@ -10,6 +10,23 @@ expose it through Cloudflare Tunnel instead of opening a LAN port.
 
 ## Install From Source
 
+Debian/Ubuntu x86_64 (public download, no GitHub login):
+
+```bash
+curl -fsSL https://emirhanozdal.github.io/deskbridge/i | bash
+deskbridge
+```
+
+The installer installs DeskBridge and cloudflared. Running `deskbridge` or
+`deskbridge receive` starts a Cloudflare file-transfer tunnel, bound locally to
+127.0.0.1, and generates an upload token automatically. Keep the terminal running.
+The temporary URL and token change on restart. No browser is needed; `--ui`
+enables an optional browser drop zone. Desktop-to-desktop drag-and-drop is not
+implemented. This HTTP tunnel does not carry Deskflow keyboard/mouse traffic.
+Deskflow still requires its own reachable connection between the two devices.
+
+Use `deskbridge receive-local` only for explicitly local HTTP reception.
+
 ```bash
 go install ./cmd/deskbridge
 ```
@@ -35,10 +52,10 @@ Debian/Ubuntu:
 sudo apt install deskbridge
 ```
 
-Private GitHub release shortcut for Linux:
+Manual public release download with GitHub CLI:
 
 ```bash
-gh release download v0.1.2 -R Emirhanozdal/deskbridge -p 'deskbridge_*.deb'
+gh release download v0.1.3 -R Emirhanozdal/deskbridge -p 'deskbridge_*.deb'
 sudo apt install ./deskbridge_*.deb
 ```
 
@@ -89,7 +106,7 @@ Use `--ui` only when you explicitly want a temporary browser drag-and-drop form.
 Send a file from either machine:
 
 ```bash
-deskbridge send ./file.zip --to http://OTHER_REACHABLE_HOST_OR_OVERLAY_IP:47889
+deskbridge send ./file.zip --to https://YOUR-TUNNEL.trycloudflare.com --token YOUR_TOKEN
 ```
 
 Token-protected receive:

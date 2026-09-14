@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -78,8 +80,7 @@ func (c *cli) run(args []string) int {
 	}
 	rest := global.Args()
 	if len(rest) == 0 {
-		usage()
-		return 2
+		rest = []string{"tunnel"}
 	}
 
 	var err error
@@ -99,6 +100,8 @@ func (c *cli) run(args []string) int {
 	case "start-client":
 		err = c.cmdStartClient(rest[1:])
 	case "receive":
+		err = c.cmdTunnel(rest[1:])
+	case "receive-local":
 		err = c.cmdReceive(rest[1:])
 	case "tunnel":
 		err = c.cmdTunnel(rest[1:])
@@ -138,7 +141,9 @@ Commands:
   deskflow-config     print or write Deskflow config
   start-server        start Deskflow server
   start-client        start Deskflow client
-  receive             receive files over local HTTP API
+  (no command)        receive files through Cloudflare Tunnel
+  receive             receive files through Cloudflare Tunnel
+  receive-local       explicitly receive over local HTTP API
   tunnel              receive files through Cloudflare Tunnel
   send <file>         send a file over HTTP
   advertise <device>  broadcast this device on LAN
@@ -419,27 +424,41 @@ func (c *cli) cmdTunnel(args []string) error {
 	fs := flag.NewFlagSet("tunnel", flag.ExitOnError)
 	dir := fs.String("dir", defaultDownloadDir(), "destination directory")
 	port := fs.Int("port", transferPort, "local receiver port")
-	token := fs.String("token", getenvDefault("DESKBRIDGE_TOKEN", ""), "required upload token")
+	token := fs.String("token", getenvDefault("DESKBRIDGE_TOKEN", ""), "upload token (generated when omitted)")
+	allowBrowserUI := fs.Bool("ui", false, "enable browser upload form")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *token == "" {
-		return errors.New("tunnel requires --token or DESKBRIDGE_TOKEN; do not expose uploads without a token")
+		secret := make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			return err
+		}
+		*token = hex.EncodeToString(secret)
 	}
 	if firstBinary("cloudflared") == "" {
 		return errors.New("cloudflared was not found in PATH")
 	}
-	opts := receiverOptions{dir: *dir, host: "127.0.0.1", port: *port, token: *token}
+	if err := os.MkdirAll(*dir, 0700); err != nil {
+		return err
+	}
+	opts := receiverOptions{dir: *dir, host: "127.0.0.1", port: *port, token: *token, allowBrowserUI: *allowBrowserUI}
 	server := newReceiverServer(opts)
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- server.ListenAndServe()
+		errCh <- server.Serve(listener)
 	}()
 	localURL := fmt.Sprintf("http://127.0.0.1:%d", *port)
 	fmt.Println("DeskBridge receiver listening locally at", localURL)
 	fmt.Println("Starting Cloudflare Tunnel. Use the printed https://*.trycloudflare.com URL with:")
 	fmt.Println("  deskbridge send <file> --to <url> --token <token>")
-	cmd := exec.Command("cloudflared", "tunnel", "--url", localURL)
+	fmt.Println("Upload token:", *token)
+	cmd := exec.Command("cloudflared", "tunnel", "--protocol", "http2", "--url", localURL)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -664,7 +683,7 @@ DeskBridge
 		case "6":
 			returnIfErr(c.cmdStartClient(nil))
 		case "7":
-			return c.cmdReceive(nil)
+			return c.cmdTunnel(nil)
 		case "8":
 			file := c.prompt("File path", "")
 			returnIfErr(c.cmdSend([]string{file}))
