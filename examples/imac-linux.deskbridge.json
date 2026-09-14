@@ -1,0 +1,23 @@
+{
+  "devices": {
+    "imac": {
+      "name": "imac",
+      "host": "100.64.0.10",
+      "port": 24800,
+      "transfer_port": 47889
+    },
+    "linux-pc": {
+      "name": "linux-pc",
+      "host": "100.64.0.20",
+      "port": 24800,
+      "transfer_port": 47889
+    }
+  },
+  "relationships": [
+    {
+      "controller": "imac",
+      "target": "linux-pc",
+      "direction": "right"
+    }
+  ]
+}

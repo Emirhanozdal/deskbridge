@@ -1,0 +1,799 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"mime"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const (
+	defaultStateFile = ".deskbridge.json"
+	deskflowPort     = 24800
+	transferPort     = 47889
+	discoveryPort    = 47888
+	discoveryMagic   = "deskbridge.v1"
+)
+
+type Device struct {
+	Name         string `json:"name"`
+	Host         string `json:"host"`
+	Port         int    `json:"port"`
+	TransferPort int    `json:"transfer_port"`
+}
+
+type Relationship struct {
+	Controller string `json:"controller"`
+	Target     string `json:"target"`
+	Direction  string `json:"direction"`
+}
+
+type State struct {
+	Devices       map[string]Device `json:"devices"`
+	Relationships []Relationship    `json:"relationships"`
+	path          string
+}
+
+type cli struct {
+	statePath string
+	stdin     *bufio.Reader
+}
+
+func main() {
+	app := cli{stdin: bufio.NewReader(os.Stdin)}
+	os.Exit(app.run(os.Args[1:]))
+}
+
+func (c *cli) run(args []string) int {
+	global := flag.NewFlagSet("deskbridge", flag.ExitOnError)
+	global.StringVar(&c.statePath, "state", getenvDefault("DESKBRIDGE_STATE", defaultStateFile), "state file")
+	if err := global.Parse(args); err != nil {
+		return 2
+	}
+	rest := global.Args()
+	if len(rest) == 0 {
+		usage()
+		return 2
+	}
+
+	var err error
+	switch rest[0] {
+	case "app":
+		err = c.cmdApp()
+	case "init":
+		err = c.cmdInit()
+	case "pair":
+		err = c.cmdPair(rest[1:])
+	case "list":
+		err = c.cmdList()
+	case "deskflow-config":
+		err = c.cmdDeskflowConfig(rest[1:])
+	case "start-server":
+		err = c.cmdStartServer(rest[1:])
+	case "start-client":
+		err = c.cmdStartClient(rest[1:])
+	case "receive":
+		err = c.cmdReceive(rest[1:])
+	case "send":
+		err = c.cmdSend(rest[1:])
+	case "advertise":
+		err = c.cmdAdvertise(rest[1:])
+	case "scan":
+		err = c.cmdScan(rest[1:])
+	case "diagnose":
+		err = c.cmdDiagnose()
+	case "help", "-h", "--help":
+		usage()
+	default:
+		err = fmt.Errorf("unknown command: %s", rest[0])
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "deskbridge:", err)
+		return 1
+	}
+	return 0
+}
+
+func usage() {
+	fmt.Println(`DeskBridge
+
+Usage:
+  deskbridge [--state .deskbridge.json] <command>
+
+Commands:
+  app                 interactive terminal app
+  init                add/update this device
+  pair [--scan]       create controller -> target relationship
+  list                list devices and relationships
+  deskflow-config     print or write Deskflow config
+  start-server        start Deskflow server
+  start-client        start Deskflow client
+  receive             receive files over HTTP
+  send <file>         send a file over HTTP
+  advertise <device>  broadcast this device on LAN
+  scan                scan LAN broadcasts
+  diagnose            show local diagnostics`)
+}
+
+func getenvDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func loadState(path string) (State, error) {
+	state := State{Devices: map[string]Device{}, path: path}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return state, nil
+	}
+	if err != nil {
+		return state, err
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return state, err
+	}
+	if state.Devices == nil {
+		state.Devices = map[string]Device{}
+	}
+	state.path = path
+	return state, nil
+}
+
+func (s State) save() error {
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.path, append(data, '\n'), 0644)
+}
+
+func (s State) sortedNames() []string {
+	names := make([]string, 0, len(s.Devices))
+	for name := range s.Devices {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (c *cli) prompt(label, fallback string) string {
+	if fallback != "" {
+		fmt.Printf("%s [%s]: ", label, fallback)
+	} else {
+		fmt.Printf("%s: ", label)
+	}
+	line, _ := c.stdin.ReadString('\n')
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return fallback
+	}
+	return line
+}
+
+func (c *cli) choose(label string, options []string) (string, error) {
+	if len(options) == 0 {
+		return "", fmt.Errorf("no options for %s", label)
+	}
+	fmt.Println()
+	fmt.Println(label)
+	for i, option := range options {
+		fmt.Printf("  %d. %s\n", i+1, option)
+	}
+	for {
+		raw := c.prompt("Choose", "1")
+		index, err := strconv.Atoi(raw)
+		if err == nil && index >= 1 && index <= len(options) {
+			return options[index-1], nil
+		}
+		fmt.Println("Invalid choice.")
+	}
+}
+
+func (c *cli) cmdInit() error {
+	state, err := loadState(c.statePath)
+	if err != nil {
+		return err
+	}
+	host, _ := os.Hostname()
+	name := c.prompt("This device name", strings.Split(host, ".")[0])
+	reachable := c.prompt("Reachable host/IP for this device", localHostGuess())
+	port := parseInt(c.prompt("Deskflow port", strconv.Itoa(deskflowPort)), deskflowPort)
+	filePort := parseInt(c.prompt("File transfer port", strconv.Itoa(transferPort)), transferPort)
+	state.Devices[name] = Device{Name: name, Host: reachable, Port: port, TransferPort: filePort}
+	if err := state.save(); err != nil {
+		return err
+	}
+	fmt.Println("Saved", name, "in", state.path)
+	return nil
+}
+
+func (c *cli) cmdPair(args []string) error {
+	fs := flag.NewFlagSet("pair", flag.ExitOnError)
+	doScan := fs.Bool("scan", false, "scan before pairing")
+	scanSeconds := fs.Int("scan-seconds", 5, "scan seconds")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	state, err := loadState(c.statePath)
+	if err != nil {
+		return err
+	}
+	if *doScan {
+		found, err := scan(*scanSeconds)
+		if err != nil {
+			return err
+		}
+		for _, item := range found {
+			state.Devices[item.Name] = item
+			fmt.Println("Found", item.Name, item.Host)
+		}
+	}
+	for {
+		if strings.ToLower(c.prompt("Add/update a device? y/n", "n")) != "y" {
+			break
+		}
+		name := c.prompt("Device name", "")
+		host := c.prompt("Reachable host/IP", "")
+		port := parseInt(c.prompt("Deskflow port", strconv.Itoa(deskflowPort)), deskflowPort)
+		filePort := parseInt(c.prompt("File transfer port", strconv.Itoa(transferPort)), transferPort)
+		state.Devices[name] = Device{Name: name, Host: host, Port: port, TransferPort: filePort}
+	}
+	names := state.sortedNames()
+	controller, err := c.choose("Which device owns the keyboard/mouse?", names)
+	if err != nil {
+		return err
+	}
+	targets := without(names, controller)
+	target, err := c.choose("Which device should be controlled?", targets)
+	if err != nil {
+		return err
+	}
+	direction, err := c.choose("Where is the controlled screen?", []string{"left", "right", "up", "down"})
+	if err != nil {
+		return err
+	}
+	state.Relationships = upsertRelationship(state.Relationships, Relationship{Controller: controller, Target: target, Direction: direction})
+	if err := state.save(); err != nil {
+		return err
+	}
+	fmt.Printf("Paired %s -> %s on %s\n", controller, target, direction)
+	return nil
+}
+
+func (c *cli) cmdList() error {
+	state, err := loadState(c.statePath)
+	if err != nil {
+		return err
+	}
+	fmt.Println("Devices")
+	for _, name := range state.sortedNames() {
+		device := state.Devices[name]
+		fmt.Printf("- %s: %s:%d, files :%d\n", device.Name, device.Host, device.Port, device.TransferPort)
+	}
+	fmt.Println("\nRelationships")
+	for _, rel := range state.Relationships {
+		fmt.Printf("- %s controls %s at %s\n", rel.Controller, rel.Target, rel.Direction)
+	}
+	return nil
+}
+
+func (c *cli) cmdDeskflowConfig(args []string) error {
+	fs := flag.NewFlagSet("deskflow-config", flag.ExitOnError)
+	controller := fs.String("controller", "", "controller device")
+	write := fs.Bool("write", false, "write config")
+	output := fs.String("output", "deskflow.conf", "output file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	state, err := loadState(c.statePath)
+	if err != nil {
+		return err
+	}
+	config, err := renderDeskflowConfig(state, *controller)
+	if err != nil {
+		return err
+	}
+	if *write {
+		if err := os.WriteFile(*output, []byte(config), 0644); err != nil {
+			return err
+		}
+		fmt.Println("Wrote", *output)
+		return nil
+	}
+	fmt.Print(config)
+	return nil
+}
+
+func (c *cli) cmdStartServer(args []string) error {
+	fs := flag.NewFlagSet("start-server", flag.ExitOnError)
+	config := fs.String("config", "deskflow.conf", "Deskflow config")
+	dryRun := fs.Bool("dry-run", false, "print command only")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	bin := firstBinary("deskflow-server", "deskflow-core", "synergys", "input-leaps")
+	if bin == "" {
+		return errors.New("Deskflow server binary was not found in PATH")
+	}
+	cmd := exec.Command(bin, "--config", *config)
+	fmt.Println(strings.Join(cmd.Args, " "))
+	if *dryRun {
+		return nil
+	}
+	return cmd.Start()
+}
+
+func (c *cli) cmdStartClient(args []string) error {
+	fs := flag.NewFlagSet("start-client", flag.ExitOnError)
+	controller := fs.String("controller", "", "controller device")
+	host := fs.String("host", "", "controller host")
+	dryRun := fs.Bool("dry-run", false, "print command only")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	targetHost := *host
+	if targetHost == "" {
+		state, err := loadState(c.statePath)
+		if err != nil {
+			return err
+		}
+		name := *controller
+		if name == "" {
+			name, err = c.choose("Connect to controller", state.sortedNames())
+			if err != nil {
+				return err
+			}
+		}
+		device, ok := state.Devices[name]
+		if !ok {
+			return fmt.Errorf("unknown device: %s", name)
+		}
+		targetHost = device.Host
+	}
+	bin := firstBinary("deskflow-client", "deskflow-core", "synergyc", "input-leapc")
+	if bin == "" {
+		return errors.New("Deskflow client binary was not found in PATH")
+	}
+	cmd := exec.Command(bin, targetHost)
+	fmt.Println(strings.Join(cmd.Args, " "))
+	if *dryRun {
+		return nil
+	}
+	return cmd.Start()
+}
+
+func (c *cli) cmdReceive(args []string) error {
+	fs := flag.NewFlagSet("receive", flag.ExitOnError)
+	dir := fs.String("dir", defaultDownloadDir(), "destination directory")
+	host := fs.String("host", "0.0.0.0", "listen host")
+	port := fs.Int("port", transferPort, "listen port")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(*dir, 0755); err != nil {
+		return err
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		name := filepath.Base(r.URL.Query().Get("name"))
+		if name == "." || name == string(filepath.Separator) || name == "" {
+			name = "deskbridge-upload.bin"
+		}
+		target := filepath.Join(*dir, name)
+		out, err := os.Create(target)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer out.Close()
+		if _, err := io.Copy(out, r.Body); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintln(w, "saved", name)
+	})
+	addr := fmt.Sprintf("%s:%d", *host, *port)
+	fmt.Println("Listening on http://" + addr + " and saving to " + *dir)
+	return http.ListenAndServe(addr, mux)
+}
+
+func (c *cli) cmdSend(args []string) error {
+	path, endpoint, err := parseSendArgs(args)
+	if err != nil {
+		return err
+	}
+	if path == "" {
+		return errors.New("usage: deskbridge send <file> [--to http://host:47889]")
+	}
+	if endpoint == "" {
+		state, err := loadState(c.statePath)
+		if err != nil {
+			return err
+		}
+		deviceName, err := c.choose("Send to device", state.sortedNames())
+		if err != nil {
+			return err
+		}
+		device := state.Devices[deviceName]
+		endpoint = fmt.Sprintf("http://%s:%d", device.Host, device.TransferPort)
+	}
+	return sendFile(path, endpoint)
+}
+
+func (c *cli) cmdAdvertise(args []string) error {
+	fs := flag.NewFlagSet("advertise", flag.ExitOnError)
+	seconds := fs.Int("seconds", 30, "seconds")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: deskbridge advertise <device>")
+	}
+	state, err := loadState(c.statePath)
+	if err != nil {
+		return err
+	}
+	device, ok := state.Devices[fs.Arg(0)]
+	if !ok {
+		return fmt.Errorf("unknown device: %s", fs.Arg(0))
+	}
+	fmt.Printf("Advertising %s for %ds\n", device.Name, *seconds)
+	return advertise(device, *seconds)
+}
+
+func (c *cli) cmdScan(args []string) error {
+	fs := flag.NewFlagSet("scan", flag.ExitOnError)
+	seconds := fs.Int("seconds", 5, "seconds")
+	save := fs.Bool("save", false, "save discoveries")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	found, err := scan(*seconds)
+	if err != nil {
+		return err
+	}
+	state, err := loadState(c.statePath)
+	if err != nil {
+		return err
+	}
+	for _, device := range found {
+		fmt.Printf("- %s: %s\n", device.Name, device.Host)
+		state.Devices[device.Name] = device
+	}
+	if *save {
+		if err := state.save(); err != nil {
+			return err
+		}
+		fmt.Printf("Saved %d device(s) to %s\n", len(found), state.path)
+	}
+	return nil
+}
+
+func (c *cli) cmdDiagnose() error {
+	state, err := loadState(c.statePath)
+	if err != nil {
+		return err
+	}
+	fmt.Println("State:", state.path)
+	fmt.Println("Local host guess:", localHostGuess())
+	fmt.Println("server:", missingText(firstBinary("deskflow-server", "deskflow-core", "synergys", "input-leaps")))
+	fmt.Println("client:", missingText(firstBinary("deskflow-client", "deskflow-core", "synergyc", "input-leapc")))
+	fmt.Println("gui:", missingText(firstBinary("deskflow", "input-leap", "barrier")))
+	fmt.Println("Devices:", len(state.Devices))
+	fmt.Println("Relationships:", len(state.Relationships))
+	return nil
+}
+
+func (c *cli) cmdApp() error {
+	for {
+		fmt.Println(`
+DeskBridge
+  1. Initialize/update this device
+  2. Pair devices
+  3. List devices and relationships
+  4. Generate Deskflow config
+  5. Start Deskflow server
+  6. Start Deskflow client
+  7. Receive files
+  8. Send a file
+  9. Diagnose
+  0. Exit`)
+		switch c.prompt("Choose", "1") {
+		case "0":
+			return nil
+		case "1":
+			returnIfErr(c.cmdInit())
+		case "2":
+			returnIfErr(c.cmdPair(nil))
+		case "3":
+			returnIfErr(c.cmdList())
+		case "4":
+			returnIfErr(c.cmdDeskflowConfig([]string{"--write"}))
+		case "5":
+			returnIfErr(c.cmdStartServer(nil))
+		case "6":
+			returnIfErr(c.cmdStartClient(nil))
+		case "7":
+			return c.cmdReceive(nil)
+		case "8":
+			file := c.prompt("File path", "")
+			returnIfErr(c.cmdSend([]string{file}))
+		case "9":
+			returnIfErr(c.cmdDiagnose())
+		default:
+			fmt.Println("Invalid choice.")
+		}
+	}
+}
+
+func returnIfErr(err error) {
+	if err != nil {
+		fmt.Println("Error:", err)
+	}
+}
+
+func parseInt(value string, fallback int) int {
+	number, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return number
+}
+
+func parseSendArgs(args []string) (string, string, error) {
+	var path string
+	var endpoint string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--to":
+			i++
+			if i >= len(args) {
+				return "", "", errors.New("--to needs a value")
+			}
+			endpoint = args[i]
+		case strings.HasPrefix(arg, "--to="):
+			endpoint = strings.TrimPrefix(arg, "--to=")
+		case strings.HasPrefix(arg, "-"):
+			return "", "", fmt.Errorf("unknown send option: %s", arg)
+		case path == "":
+			path = arg
+		default:
+			return "", "", fmt.Errorf("unexpected send argument: %s", arg)
+		}
+	}
+	return path, endpoint, nil
+}
+
+func without(items []string, item string) []string {
+	out := []string{}
+	for _, current := range items {
+		if current != item {
+			out = append(out, current)
+		}
+	}
+	return out
+}
+
+func upsertRelationship(items []Relationship, rel Relationship) []Relationship {
+	out := []Relationship{}
+	for _, current := range items {
+		if current.Controller == rel.Controller && current.Target == rel.Target {
+			continue
+		}
+		out = append(out, current)
+	}
+	return append(out, rel)
+}
+
+func renderDeskflowConfig(state State, controller string) (string, error) {
+	rels := state.Relationships
+	if controller != "" {
+		filtered := []Relationship{}
+		for _, rel := range rels {
+			if rel.Controller == controller {
+				filtered = append(filtered, rel)
+			}
+		}
+		rels = filtered
+	}
+	if len(rels) == 0 {
+		return "", errors.New("no relationships configured")
+	}
+	screenSet := map[string]bool{}
+	for _, rel := range rels {
+		screenSet[rel.Controller] = true
+		screenSet[rel.Target] = true
+	}
+	screens := make([]string, 0, len(screenSet))
+	for screen := range screenSet {
+		screens = append(screens, screen)
+	}
+	sort.Strings(screens)
+
+	var b strings.Builder
+	b.WriteString("section: screens\n")
+	for _, screen := range screens {
+		fmt.Fprintf(&b, "\t%s:\n", screen)
+	}
+	b.WriteString("end\n\nsection: links\n")
+	for _, rel := range rels {
+		fmt.Fprintf(&b, "\t%s:\n\t\t%s = %s\n", rel.Controller, rel.Direction, rel.Target)
+		fmt.Fprintf(&b, "\t%s:\n\t\t%s = %s\n", rel.Target, opposite(rel.Direction), rel.Controller)
+	}
+	b.WriteString("end\n\nsection: aliases\n")
+	for _, screen := range screens {
+		device, ok := state.Devices[screen]
+		if ok {
+			fmt.Fprintf(&b, "\t%s:\n\t\t%s\n", screen, device.Host)
+		}
+	}
+	b.WriteString("end\n")
+	return b.String(), nil
+}
+
+func opposite(direction string) string {
+	switch direction {
+	case "left":
+		return "right"
+	case "right":
+		return "left"
+	case "up":
+		return "down"
+	case "down":
+		return "up"
+	default:
+		return "left"
+	}
+}
+
+func firstBinary(names ...string) string {
+	for _, name := range names {
+		if path, err := exec.LookPath(name); err == nil {
+			return path
+		}
+	}
+	return ""
+}
+
+func missingText(value string) string {
+	if value == "" {
+		return "missing"
+	}
+	return value
+}
+
+func localHostGuess() string {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return "127.0.0.1"
+	}
+	defer conn.Close()
+	return conn.LocalAddr().(*net.UDPAddr).IP.String()
+}
+
+func defaultDownloadDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "."
+	}
+	return filepath.Join(home, "Downloads")
+}
+
+func sendFile(path, endpoint string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	uploadURL := strings.TrimRight(endpoint, "/") + "/upload?name=" + url.QueryEscape(filepath.Base(path))
+	req, err := http.NewRequest(http.MethodPost, uploadURL, file)
+	if err != nil {
+		return err
+	}
+	req.ContentLength = info.Size()
+	req.Header.Set("Content-Type", mime.TypeByExtension(filepath.Ext(path)))
+	if req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/octet-stream")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("transfer failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	fmt.Println(strings.TrimSpace(string(body)))
+	return nil
+}
+
+func advertise(device Device, seconds int) error {
+	payload, err := json.Marshal(map[string]any{"magic": discoveryMagic, "device": device})
+	if err != nil {
+		return err
+	}
+	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("255.255.255.255:%d", discoveryPort))
+	if err != nil {
+		return err
+	}
+	conn, err := net.DialUDP("udp4", nil, addr)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := conn.Write(payload); err != nil {
+			return err
+		}
+		time.Sleep(time.Second)
+	}
+	return nil
+}
+
+func scan(seconds int) ([]Device, error) {
+	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf(":%d", discoveryPort))
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.ListenUDP("udp4", addr)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	found := map[string]Device{}
+	buf := make([]byte, 65535)
+	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
+	for time.Now().Before(deadline) {
+		_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		n, _, err := conn.ReadFromUDP(buf)
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		var msg struct {
+			Magic  string `json:"magic"`
+			Device Device `json:"device"`
+		}
+		if err := json.NewDecoder(bytes.NewReader(buf[:n])).Decode(&msg); err != nil {
+			continue
+		}
+		if msg.Magic == discoveryMagic && msg.Device.Name != "" {
+			found[msg.Device.Name] = msg.Device
+		}
+	}
+	devices := make([]Device, 0, len(found))
+	for _, device := range found {
+		devices = append(devices, device)
+	}
+	sort.Slice(devices, func(i, j int) bool { return devices[i].Name < devices[j].Name })
+	return devices, nil
+}

@@ -1,0 +1,9 @@
+Package: deskbridge
+Version: 0.1.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: DeskBridge <deskbridge@example.invalid>
+Description: Terminal-first keyboard, mouse, and file-transfer bridge
+ DeskBridge pairs personal machines, generates Deskflow configuration,
+ starts Deskflow clients and servers, and transfers files between devices.

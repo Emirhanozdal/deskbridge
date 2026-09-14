@@ -1,0 +1,6 @@
+build/
+outputs/
+work/
+.deskbridge.json
+deskflow.conf
+.DS_Store
