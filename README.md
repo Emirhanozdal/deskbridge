@@ -49,6 +49,12 @@ deskbridge app
 The interactive app lets you initialize a device, pair machines, generate the
 Deskflow config, start server/client mode, and send or receive files.
 
+Check readiness:
+
+```bash
+deskbridge doctor
+```
+
 ## Direct Commands
 
 On the iMac:
@@ -67,6 +73,9 @@ deskbridge init
 deskbridge start-client --host IMAC_REACHABLE_HOST_OR_OVERLAY_IP
 deskbridge receive --dir ~/Downloads
 ```
+
+Then open the printed receiver URL in a browser to upload files through the web
+form, or send from another terminal with `deskbridge send`.
 
 Send a file from either machine:
 

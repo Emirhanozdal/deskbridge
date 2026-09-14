@@ -7,8 +7,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -96,6 +98,8 @@ func (c *cli) run(args []string) int {
 		err = c.cmdScan(rest[1:])
 	case "diagnose":
 		err = c.cmdDiagnose()
+	case "doctor":
+		err = c.cmdDiagnose()
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -126,7 +130,8 @@ Commands:
   send <file>         send a file over HTTP
   advertise <device>  broadcast this device on LAN
   scan                scan LAN broadcasts
-  diagnose            show local diagnostics`)
+  diagnose            show local diagnostics
+  doctor              alias for diagnose`)
 }
 
 func getenvDefault(key, fallback string) string {
@@ -327,7 +332,7 @@ func (c *cli) cmdStartServer(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	bin := firstBinary("deskflow-server", "deskflow-core", "synergys", "input-leaps")
+	bin := firstDeskflowBinary("server")
 	if bin == "" {
 		return errors.New("Deskflow server binary was not found in PATH")
 	}
@@ -366,7 +371,7 @@ func (c *cli) cmdStartClient(args []string) error {
 		}
 		targetHost = device.Host
 	}
-	bin := firstBinary("deskflow-client", "deskflow-core", "synergyc", "input-leapc")
+	bin := firstDeskflowBinary("client")
 	if bin == "" {
 		return errors.New("Deskflow client binary was not found in PATH")
 	}
@@ -390,23 +395,30 @@ func (c *cli) cmdReceive(args []string) error {
 		return err
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, renderReceiverHTML(*dir, *port))
+	})
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":   true,
+			"app":  "deskbridge",
+			"dir":  *dir,
+			"port": *port,
+		})
+	})
 	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		name := filepath.Base(r.URL.Query().Get("name"))
-		if name == "." || name == string(filepath.Separator) || name == "" {
-			name = "deskbridge-upload.bin"
-		}
-		target := filepath.Join(*dir, name)
-		out, err := os.Create(target)
+		name, err := saveUpload(r, *dir)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		defer out.Close()
-		if _, err := io.Copy(out, r.Body); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -496,11 +508,16 @@ func (c *cli) cmdDiagnose() error {
 	}
 	fmt.Println("State:", state.path)
 	fmt.Println("Local host guess:", localHostGuess())
-	fmt.Println("server:", missingText(firstBinary("deskflow-server", "deskflow-core", "synergys", "input-leaps")))
-	fmt.Println("client:", missingText(firstBinary("deskflow-client", "deskflow-core", "synergyc", "input-leapc")))
-	fmt.Println("gui:", missingText(firstBinary("deskflow", "input-leap", "barrier")))
+	fmt.Println("server:", missingText(firstDeskflowBinary("server")))
+	fmt.Println("client:", missingText(firstDeskflowBinary("client")))
+	fmt.Println("gui:", missingText(firstDeskflowBinary("gui")))
 	fmt.Println("Devices:", len(state.Devices))
 	fmt.Println("Relationships:", len(state.Relationships))
+	if firstDeskflowBinary("server") == "" || firstDeskflowBinary("client") == "" {
+		fmt.Println("Keyboard/mouse: Deskflow is not installed or not discoverable yet.")
+	} else {
+		fmt.Println("Keyboard/mouse: ready")
+	}
 	return nil
 }
 
@@ -545,6 +562,41 @@ DeskBridge
 		}
 	}
 }
+
+func renderReceiverHTML(dir string, port int) string {
+	page := strings.ReplaceAll(receiverHTML, "{{DIR}}", html.EscapeString(dir))
+	page = strings.ReplaceAll(page, "{{PORT}}", strconv.Itoa(port))
+	return page
+}
+
+const receiverHTML = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DeskBridge Receiver</title>
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #101418; color: #eef2f3; }
+    main { max-width: 720px; margin: 0 auto; padding: 56px 24px; }
+    h1 { font-size: 34px; margin: 0 0 10px; letter-spacing: 0; }
+    p { color: #b7c0c7; line-height: 1.5; }
+    form { margin-top: 28px; border: 1px solid #2a333b; padding: 22px; background: #171d22; border-radius: 8px; }
+    input[type=file] { display: block; width: 100%; margin-bottom: 18px; color: #dbe4ea; }
+    button { background: #18a999; border: 0; color: #061311; padding: 12px 16px; border-radius: 6px; font-weight: 700; cursor: pointer; }
+    code { color: #91d7ff; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>DeskBridge Receiver</h1>
+    <p>Receiving files into <code>{{DIR}}</code> on port <code>{{PORT}}</code>.</p>
+    <form action="/upload" method="post" enctype="multipart/form-data">
+      <input type="file" name="file" required>
+      <button type="submit">Upload File</button>
+    </form>
+  </main>
+</body>
+</html>`
 
 func returnIfErr(err error) {
 	if err != nil {
@@ -676,6 +728,46 @@ func firstBinary(names ...string) string {
 	return ""
 }
 
+func firstDeskflowBinary(kind string) string {
+	switch kind {
+	case "server":
+		return firstExisting(
+			firstBinary("deskflow-server", "deskflow-core", "synergys", "input-leaps"),
+			"/Applications/Deskflow.app/Contents/MacOS/deskflow-core",
+			"/Applications/Deskflow.app/Contents/MacOS/deskflow-server",
+			"/Applications/Input Leap.app/Contents/MacOS/input-leaps",
+		)
+	case "client":
+		return firstExisting(
+			firstBinary("deskflow-client", "deskflow-core", "synergyc", "input-leapc"),
+			"/Applications/Deskflow.app/Contents/MacOS/deskflow-core",
+			"/Applications/Deskflow.app/Contents/MacOS/deskflow-client",
+			"/Applications/Input Leap.app/Contents/MacOS/input-leapc",
+		)
+	case "gui":
+		return firstExisting(
+			firstBinary("deskflow", "input-leap", "barrier"),
+			"/Applications/Deskflow.app/Contents/MacOS/Deskflow",
+			"/Applications/Deskflow.app/Contents/MacOS/deskflow",
+			"/Applications/Input Leap.app/Contents/MacOS/Input Leap",
+		)
+	default:
+		return ""
+	}
+}
+
+func firstExisting(paths ...string) string {
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path
+		}
+	}
+	return ""
+}
+
 func missingText(value string) string {
 	if value == "" {
 		return "missing"
@@ -731,6 +823,69 @@ func sendFile(path, endpoint string) error {
 	}
 	fmt.Println(strings.TrimSpace(string(body)))
 	return nil
+}
+
+func saveUpload(r *http.Request, dir string) (string, error) {
+	contentType := r.Header.Get("Content-Type")
+	mediaType, _, _ := mime.ParseMediaType(contentType)
+	if mediaType == "multipart/form-data" {
+		return saveMultipartUpload(r, dir)
+	}
+	name := cleanUploadName(r.URL.Query().Get("name"))
+	target := filepath.Join(dir, name)
+	out, err := os.Create(target)
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, r.Body); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+func saveMultipartUpload(r *http.Request, dir string) (string, error) {
+	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		return "", err
+	}
+	file, header, err := firstMultipartFile(r.MultipartForm)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	name := cleanUploadName(header.Filename)
+	target := filepath.Join(dir, name)
+	out, err := os.Create(target)
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, file); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+func firstMultipartFile(form *multipart.Form) (multipart.File, *multipart.FileHeader, error) {
+	if form == nil {
+		return nil, nil, errors.New("missing multipart form")
+	}
+	for _, headers := range form.File {
+		if len(headers) == 0 {
+			continue
+		}
+		file, err := headers[0].Open()
+		return file, headers[0], err
+	}
+	return nil, nil, errors.New("multipart form did not include a file")
+}
+
+func cleanUploadName(name string) string {
+	clean := filepath.Base(name)
+	if clean == "." || clean == string(filepath.Separator) || clean == "" {
+		return "deskbridge-upload.bin"
+	}
+	return clean
 }
 
 func advertise(device Device, seconds int) error {

@@ -48,6 +48,25 @@ func TestRenderDeskflowConfig(t *testing.T) {
 	}
 }
 
+func TestParseSendArgsAllowsOptionsAfterPath(t *testing.T) {
+	path, endpoint, err := parseSendArgs([]string{"file.txt", "--to", "http://127.0.0.1:47889"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != "file.txt" || endpoint != "http://127.0.0.1:47889" {
+		t.Fatalf("unexpected parse result: %q %q", path, endpoint)
+	}
+}
+
+func TestCleanUploadName(t *testing.T) {
+	if got := cleanUploadName("../../secret.txt"); got != "secret.txt" {
+		t.Fatalf("unexpected clean name: %s", got)
+	}
+	if got := cleanUploadName(""); got != "deskbridge-upload.bin" {
+		t.Fatalf("unexpected fallback name: %s", got)
+	}
+}
+
 func TestBinaryBuilds(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "deskbridge")
 	if err := os.WriteFile(path, []byte("placeholder"), 0644); err != nil {
