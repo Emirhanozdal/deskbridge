@@ -80,11 +80,15 @@ func (c *cli) run(args []string) int {
 	}
 	rest := global.Args()
 	if len(rest) == 0 {
-		rest = []string{"tunnel"}
+		rest = []string{"connect"}
 	}
 
 	var err error
 	switch rest[0] {
+	case "connect":
+		err = c.cmdConnect(rest[1:])
+	case "send-peer":
+		err = c.cmdSendPeer(rest[1:])
 	case "app":
 		err = c.cmdApp()
 	case "init":
@@ -100,7 +104,7 @@ func (c *cli) run(args []string) int {
 	case "start-client":
 		err = c.cmdStartClient(rest[1:])
 	case "receive":
-		err = c.cmdTunnel(rest[1:])
+		err = c.cmdConnect(rest[1:])
 	case "receive-local":
 		err = c.cmdReceive(rest[1:])
 	case "tunnel":
@@ -134,6 +138,8 @@ Usage:
   deskbridge [--state .deskbridge.json] <command>
 
 Commands:
+  connect             connect both devices through the private 443 relay
+  send-peer <file>     send a file to the connected peer
   app                 interactive terminal app
   init                add/update this device
   pair [--scan]       create controller -> target relationship
@@ -141,8 +147,8 @@ Commands:
   deskflow-config     print or write Deskflow config
   start-server        start Deskflow server
   start-client        start Deskflow client
-  (no command)        receive files through Cloudflare Tunnel
-  receive             receive files through Cloudflare Tunnel
+  (no command)        connect devices through the private 443 relay
+  receive             alias for connect
   receive-local       explicitly receive over local HTTP API
   tunnel              receive files through Cloudflare Tunnel
   send <file>         send a file over HTTP
@@ -703,7 +709,7 @@ DeskBridge
 		case "6":
 			returnIfErr(c.cmdStartClient(nil))
 		case "7":
-			return c.cmdTunnel(nil)
+			return c.cmdConnect(nil)
 		case "8":
 			file := c.prompt("File path", "")
 			returnIfErr(c.cmdSend([]string{file}))

@@ -6,3 +6,5 @@ deskflow.conf
 .DS_Store
 deskbridge-server.ini
 deskbridge-client.ini
+.wrangler/
+node_modules/

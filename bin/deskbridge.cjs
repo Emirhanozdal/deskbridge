@@ -7,10 +7,10 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 
-const version = '0.1.4';
+const version = '0.2.0';
 const releases = {
-  'darwin-arm64': '3675ae7c80f5d4d1740b3252ea93d6edd602ce1cd5ffb5120cfe1d49c6454a4f',
-  'linux-x64': 'acdc834549035c143801501692ee7c1ed6d4d028084daa0fbf26b7751873dc2e',
+  'darwin-arm64': 'dafea8a1e0d5cbee35e43ca724241593952036cd81eb3f66dd0ea8a258136a24',
+  'linux-x64': 'a6e34649552037c8756d6471a68bf54b78902cdc3ef9db5c50921df204ccf38f',
 };
 const cloudflared = {
   'darwin-arm64': ['cloudflared-darwin-arm64.tgz', 'c27ab8fd0aa489449e3d201eb02f957ef460a13b613662928b1b23394bf1bcfe'],
@@ -49,7 +49,7 @@ try {
     }
   }
   const args = process.argv.slice(2);
-  if (!args.some(arg => ['help', '--help', '-h'].includes(arg)) && !fs.existsSync(path.join(cache, 'cloudflared'))) {
+  if (args.includes('tunnel') && !args.some(arg => ['help', '--help', '-h'].includes(arg)) && !fs.existsSync(path.join(cache, 'cloudflared'))) {
     const staging = fs.mkdtempSync(path.join(cache, 'cloudflared-'));
     try {
       const [asset, expected] = cloudflared[platform];

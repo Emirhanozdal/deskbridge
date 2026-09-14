@@ -1,0 +1,10 @@
+{
+  "name": "deskbridge-relay",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-09-14",
+  "account_id": "3864fd7e31aa64bcac76096d1bc973e8",
+  "workers_dev": true,
+  "durable_objects": { "bindings": [{ "name": "PAIR", "class_name": "Pair" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Pair"] }],
+  "observability": { "enabled": false }
+}

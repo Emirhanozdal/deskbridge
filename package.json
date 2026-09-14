@@ -1,6 +1,6 @@
 {
   "name": "deskbridge",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Terminal launcher for DeskBridge on macOS and Linux",
   "bin": { "deskbridge": "bin/deskbridge.cjs" },
   "files": ["bin/", "README.md"],
