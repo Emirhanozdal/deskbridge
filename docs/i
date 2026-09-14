@@ -8,13 +8,21 @@ fi
 command -v apt >/dev/null || { echo 'apt is required.' >&2; exit 1; }
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
+download() {
+  local label="$1" url="$2" target="$3"
+  echo "Downloading $label..."
+  if ! curl -fL --retry 5 --retry-delay 2 --connect-timeout 15 --max-time 300 "$url" -o "$target"; then
+    echo "Could not download $label. Installation stopped; retry this installer." >&2
+    return 1
+  fi
+}
 base=https://github.com/Emirhanozdal/deskbridge/releases/download/v0.1.3
-curl -fL --retry 3 "$base/deskbridge_0.1.3_amd64.deb" -o "$tmpdir/deskbridge_0.1.3_amd64.deb"
-curl -fsSL --retry 3 "$base/SHA256SUMS" -o "$tmpdir/SHA256SUMS"
+download DeskBridge "$base/deskbridge_0.1.3_amd64.deb" "$tmpdir/deskbridge_0.1.3_amd64.deb"
+download checksums "$base/SHA256SUMS" "$tmpdir/SHA256SUMS"
 (cd "$tmpdir" && sha256sum --check SHA256SUMS)
 sudo apt install -y "$tmpdir/deskbridge_0.1.3_amd64.deb"
 if ! command -v cloudflared >/dev/null 2>&1; then
-  curl -fL --retry 3 https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o "$tmpdir/cloudflared.deb"
+  download cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb "$tmpdir/cloudflared.deb"
   sudo apt install -y "$tmpdir/cloudflared.deb"
 fi
 echo 'Installed. Run: deskbridge'

@@ -13,7 +13,7 @@ expose it through Cloudflare Tunnel instead of opening a LAN port.
 Debian/Ubuntu x86_64 (public download, no GitHub login):
 
 ```bash
-curl -fsSL https://emirhanozdal.github.io/deskbridge/i | bash
+curl -fsSL --retry 5 https://emirhanozdal.github.io/deskbridge/i -o /tmp/deskbridge-install.sh && bash /tmp/deskbridge-install.sh
 deskbridge
 ```
 
