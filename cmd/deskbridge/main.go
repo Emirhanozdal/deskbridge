@@ -346,6 +346,7 @@ func (c *cli) cmdDeskflowConfig(args []string) error {
 func (c *cli) cmdStartServer(args []string) error {
 	fs := flag.NewFlagSet("start-server", flag.ExitOnError)
 	config := fs.String("config", "deskflow.conf", "Deskflow config")
+	name := fs.String("name", "", "this device's name in the screen layout")
 	dryRun := fs.Bool("dry-run", false, "print command only")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -354,18 +355,28 @@ func (c *cli) cmdStartServer(args []string) error {
 	if bin == "" {
 		return errors.New("Deskflow server binary was not found in PATH")
 	}
-	cmd := exec.Command(bin, "--config", *config)
+	commandArgs := []string{"--config", *config}
+	if filepath.Base(bin) == "deskflow-core" {
+		settings, err := c.coreSettings("server", *name, *config, "", *dryRun)
+		if err != nil {
+			return err
+		}
+		commandArgs = []string{"server", "--settings", settings}
+	}
+	cmd := exec.Command(bin, commandArgs...)
 	fmt.Println(strings.Join(cmd.Args, " "))
 	if *dryRun {
 		return nil
 	}
-	return cmd.Start()
+	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
+	return cmd.Run()
 }
 
 func (c *cli) cmdStartClient(args []string) error {
 	fs := flag.NewFlagSet("start-client", flag.ExitOnError)
 	controller := fs.String("controller", "", "controller device")
 	host := fs.String("host", "", "controller host")
+	name := fs.String("name", "", "this device's name in the screen layout")
 	dryRun := fs.Bool("dry-run", false, "print command only")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -393,12 +404,21 @@ func (c *cli) cmdStartClient(args []string) error {
 	if bin == "" {
 		return errors.New("Deskflow client binary was not found in PATH")
 	}
-	cmd := exec.Command(bin, targetHost)
+	commandArgs := []string{targetHost}
+	if filepath.Base(bin) == "deskflow-core" {
+		settings, err := c.coreSettings("client", *name, "", targetHost, *dryRun)
+		if err != nil {
+			return err
+		}
+		commandArgs = []string{"client", "--settings", settings}
+	}
+	cmd := exec.Command(bin, commandArgs...)
 	fmt.Println(strings.Join(cmd.Args, " "))
 	if *dryRun {
 		return nil
 	}
-	return cmd.Start()
+	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
+	return cmd.Run()
 }
 
 func (c *cli) cmdReceive(args []string) error {

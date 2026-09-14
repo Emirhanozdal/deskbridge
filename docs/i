@@ -16,11 +16,11 @@ download() {
     return 1
   fi
 }
-base=https://github.com/Emirhanozdal/deskbridge/releases/download/v0.1.3
-download DeskBridge "$base/deskbridge_0.1.3_amd64.deb" "$tmpdir/deskbridge_0.1.3_amd64.deb"
+base=https://github.com/Emirhanozdal/deskbridge/releases/download/v0.1.4
+download DeskBridge "$base/deskbridge_0.1.4_amd64.deb" "$tmpdir/deskbridge_0.1.4_amd64.deb"
 download checksums "$base/SHA256SUMS" "$tmpdir/SHA256SUMS"
 (cd "$tmpdir" && sha256sum --check SHA256SUMS)
-sudo apt install -y "$tmpdir/deskbridge_0.1.3_amd64.deb"
+sudo apt install -y "$tmpdir/deskbridge_0.1.4_amd64.deb"
 if ! command -v cloudflared >/dev/null 2>&1; then
   download cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb "$tmpdir/cloudflared.deb"
   sudo apt install -y "$tmpdir/cloudflared.deb"

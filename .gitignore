@@ -4,3 +4,5 @@ work/
 .deskbridge.json
 deskflow.conf
 .DS_Store
+deskbridge-server.ini
+deskbridge-client.ini

@@ -3,6 +3,22 @@
 DeskBridge is a terminal-first device bridge for a personal Mac + Linux setup.
 It is a single Go binary: no Python runtime, no venv, no app framework.
 
+## Run With npx
+
+```bash
+npx --yes github:Emirhanozdal/deskbridge doctor
+npx --yes github:Emirhanozdal/deskbridge
+```
+
+Requires Node.js 18+, curl, and tar. The launcher downloads and verifies the native
+DeskBridge and cloudflared binaries once, with no sudo or Go compiler required.
+Supported: Apple Silicon macOS and x86_64 Linux. Deskflow must still be installed
+on both computers. The npm registry name is not published; use the GitHub command.
+
+Current limitation: the tested school network times out connecting to Cloudflare
+on port 7844. This release is not an end-to-end working school-network KVM.
+Cross-desktop file dragging and automatic background startup remain unimplemented.
+
 It pairs machines, generates Deskflow-compatible keyboard/mouse configuration,
 starts Deskflow when installed, and transfers files between reachable devices.
 For restricted school networks, it can keep the receiver bound to localhost and
@@ -170,6 +186,11 @@ deskbridge --state examples/imac-linux.deskbridge.json deskflow-config --write -
 deskbridge start-server --config deskflow.conf --dry-run
 deskbridge --state examples/imac-linux.deskbridge.json start-client --controller imac --dry-run
 ```
+
+For Deskflow 1.26, start commands generate separate INI settings with TLS and peer
+fingerprint checks enabled. Pass `--name` matching the screen layout. The process
+runs in the foreground so startup errors are visible. Grant the OS permissions
+and configure trusted Deskflow peer fingerprints before connecting.
 
 ## Roadmap
 
