@@ -6,7 +6,7 @@ class Deskbridge < Formula
   on_macos do
     if Hardware::CPU.arm?
       url "https://example.invalid/deskbridge-0.1.0-darwin-arm64.tar.gz"
-      sha256 "32887680964bc93e01bf969ab77be20c3bc50aaec201fbf05e9cdf8213f90934"
+      sha256 "cb08b443616f2991e929e9ca9a76a2bb13b9d3ab50f1dfee741cd1154e7d23bd"
     else
       url "https://example.invalid/deskbridge-0.1.0-darwin-amd64.tar.gz"
       sha256 "CHANGE_ME"
