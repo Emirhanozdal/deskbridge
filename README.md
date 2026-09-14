@@ -5,6 +5,8 @@ It is a single Go binary: no Python runtime, no venv, no app framework.
 
 It pairs machines, generates Deskflow-compatible keyboard/mouse configuration,
 starts Deskflow when installed, and transfers files between reachable devices.
+For restricted school networks, it can keep the receiver bound to localhost and
+expose it through Cloudflare Tunnel instead of opening a LAN port.
 
 ## Install From Source
 
@@ -74,14 +76,46 @@ deskbridge start-client --host IMAC_REACHABLE_HOST_OR_OVERLAY_IP
 deskbridge receive --dir ~/Downloads
 ```
 
-Then open the printed receiver URL in a browser to upload files through the web
-form, or send from another terminal with `deskbridge send`.
+This runs as a background-style HTTP API. It does not need a browser UI.
+Use `--ui` only when you explicitly want a temporary browser upload form.
 
 Send a file from either machine:
 
 ```bash
 deskbridge send ./file.zip --to http://OTHER_REACHABLE_HOST_OR_OVERLAY_IP:47889
 ```
+
+Token-protected receive:
+
+```bash
+DESKBRIDGE_TOKEN="$(openssl rand -hex 16)" deskbridge receive --dir ~/Downloads
+```
+
+Send with the same token:
+
+```bash
+deskbridge send ./file.zip --to http://127.0.0.1:47889 --token YOUR_TOKEN
+```
+
+## Cloudflare Tunnel
+
+For school networks where LAN device-to-device traffic is blocked, do not bind
+DeskBridge to `0.0.0.0`. Keep the receiver local and let Cloudflare carry the
+HTTPS tunnel:
+
+```bash
+DESKBRIDGE_TOKEN="$(openssl rand -hex 16)"
+deskbridge tunnel --dir ~/Downloads --token "$DESKBRIDGE_TOKEN"
+```
+
+`cloudflared` prints a temporary `https://*.trycloudflare.com` URL. On the other
+machine:
+
+```bash
+deskbridge send ./file.zip --to https://YOUR-TUNNEL.trycloudflare.com --token "$DESKBRIDGE_TOKEN"
+```
+
+This avoids publishing a raw local port on the school network.
 
 ## Optional LAN Discovery
 
@@ -97,8 +131,8 @@ deskbridge pair
 ```
 
 If discovery fails, enter the address manually. The host can be a LAN IP,
-Ethernet IP, Tailscale/WireGuard IP, SSH tunnel endpoint, or a future relay
-address.
+Ethernet IP, Tailscale/WireGuard IP, SSH tunnel endpoint, or Cloudflare Tunnel
+URL for file transfer.
 
 ## Deskflow
 
@@ -116,5 +150,5 @@ deskbridge --state examples/imac-linux.deskbridge.json start-client --controller
 ## Roadmap
 
 - Phase 1: macOS + Linux terminal MVP, Deskflow config/launch, direct file transfer.
-- Phase 1.5: overlay/relay fallback for blocked school networks.
+- Phase 1.5: Cloudflare Tunnel and overlay/relay fallback for blocked school networks.
 - Phase 2: Windows support with `.exe`, installer, service startup, and package manager manifests.

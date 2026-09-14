@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -55,6 +57,14 @@ type cli struct {
 	stdin     *bufio.Reader
 }
 
+type receiverOptions struct {
+	dir            string
+	host           string
+	port           int
+	token          string
+	allowBrowserUI bool
+}
+
 func main() {
 	app := cli{stdin: bufio.NewReader(os.Stdin)}
 	os.Exit(app.run(os.Args[1:]))
@@ -90,6 +100,8 @@ func (c *cli) run(args []string) int {
 		err = c.cmdStartClient(rest[1:])
 	case "receive":
 		err = c.cmdReceive(rest[1:])
+	case "tunnel":
+		err = c.cmdTunnel(rest[1:])
 	case "send":
 		err = c.cmdSend(rest[1:])
 	case "advertise":
@@ -126,7 +138,8 @@ Commands:
   deskflow-config     print or write Deskflow config
   start-server        start Deskflow server
   start-client        start Deskflow client
-  receive             receive files over HTTP
+  receive             receive files over local HTTP API
+  tunnel              receive files through Cloudflare Tunnel
   send <file>         send a file over HTTP
   advertise <device>  broadcast this device on LAN
   scan                scan LAN broadcasts
@@ -386,30 +399,101 @@ func (c *cli) cmdStartClient(args []string) error {
 func (c *cli) cmdReceive(args []string) error {
 	fs := flag.NewFlagSet("receive", flag.ExitOnError)
 	dir := fs.String("dir", defaultDownloadDir(), "destination directory")
-	host := fs.String("host", "0.0.0.0", "listen host")
+	host := fs.String("host", "127.0.0.1", "listen host")
 	port := fs.Int("port", transferPort, "listen port")
+	token := fs.String("token", getenvDefault("DESKBRIDGE_TOKEN", ""), "upload token")
+	allowBrowserUI := fs.Bool("ui", false, "enable browser upload form")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(*dir, 0755); err != nil {
+	return serveReceiver(receiverOptions{
+		dir:            *dir,
+		host:           *host,
+		port:           *port,
+		token:          *token,
+		allowBrowserUI: *allowBrowserUI,
+	})
+}
+
+func (c *cli) cmdTunnel(args []string) error {
+	fs := flag.NewFlagSet("tunnel", flag.ExitOnError)
+	dir := fs.String("dir", defaultDownloadDir(), "destination directory")
+	port := fs.Int("port", transferPort, "local receiver port")
+	token := fs.String("token", getenvDefault("DESKBRIDGE_TOKEN", ""), "required upload token")
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if *token == "" {
+		return errors.New("tunnel requires --token or DESKBRIDGE_TOKEN; do not expose uploads without a token")
+	}
+	if firstBinary("cloudflared") == "" {
+		return errors.New("cloudflared was not found in PATH")
+	}
+	opts := receiverOptions{dir: *dir, host: "127.0.0.1", port: *port, token: *token}
+	server := newReceiverServer(opts)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.ListenAndServe()
+	}()
+	localURL := fmt.Sprintf("http://127.0.0.1:%d", *port)
+	fmt.Println("DeskBridge receiver listening locally at", localURL)
+	fmt.Println("Starting Cloudflare Tunnel. Use the printed https://*.trycloudflare.com URL with:")
+	fmt.Println("  deskbridge send <file> --to <url> --token <token>")
+	cmd := exec.Command("cloudflared", "tunnel", "--url", localURL)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Start(); err != nil {
+		_ = server.Shutdown(context.Background())
+		return err
+	}
+	select {
+	case err := <-errCh:
+		_ = cmd.Process.Kill()
+		return err
+	case err := <-waitCommand(cmd):
+		_ = server.Shutdown(context.Background())
+		return err
+	}
+}
+
+func serveReceiver(opts receiverOptions) error {
+	if err := os.MkdirAll(opts.dir, 0755); err != nil {
+		return err
+	}
+	server := newReceiverServer(opts)
+	addr := fmt.Sprintf("%s:%d", opts.host, opts.port)
+	if opts.token == "" {
+		fmt.Println("Warning: receiver upload token is not set. Use --token or DESKBRIDGE_TOKEN before exposing this beyond localhost.")
+	}
+	fmt.Println("Listening on http://" + addr + " and saving to " + opts.dir)
+	return server.ListenAndServe()
+}
+
+func newReceiverServer(opts receiverOptions) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, renderReceiverHTML(*dir, *port))
+		if opts.allowBrowserUI {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, renderReceiverHTML(opts.dir, opts.port))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok":   true,
-			"app":  "deskbridge",
-			"dir":  *dir,
-			"port": *port,
+			"ok":             true,
+			"app":            "deskbridge",
+			"dir":            opts.dir,
+			"port":           opts.port,
+			"auth_required":  opts.token != "",
+			"browser_ui":     opts.allowBrowserUI,
+			"listen_address": opts.host,
 		})
 	})
 	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
@@ -417,25 +501,53 @@ func (c *cli) cmdReceive(args []string) error {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		name, err := saveUpload(r, *dir)
+		if !authorized(r, opts.token) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		name, err := saveUpload(r, opts.dir)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		fmt.Fprintln(w, "saved", name)
 	})
-	addr := fmt.Sprintf("%s:%d", *host, *port)
-	fmt.Println("Listening on http://" + addr + " and saving to " + *dir)
-	return http.ListenAndServe(addr, mux)
+	return &http.Server{
+		Addr:              fmt.Sprintf("%s:%d", opts.host, opts.port),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+}
+
+func authorized(r *http.Request, token string) bool {
+	if token == "" {
+		return true
+	}
+	supplied := r.Header.Get("X-DeskBridge-Token")
+	if supplied == "" {
+		supplied = r.URL.Query().Get("token")
+	}
+	if supplied == "" || len(supplied) != len(token) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(supplied), []byte(token)) == 1
+}
+
+func waitCommand(cmd *exec.Cmd) <-chan error {
+	ch := make(chan error, 1)
+	go func() {
+		ch <- cmd.Wait()
+	}()
+	return ch
 }
 
 func (c *cli) cmdSend(args []string) error {
-	path, endpoint, err := parseSendArgs(args)
+	path, endpoint, token, err := parseSendArgs(args)
 	if err != nil {
 		return err
 	}
 	if path == "" {
-		return errors.New("usage: deskbridge send <file> [--to http://host:47889]")
+		return errors.New("usage: deskbridge send <file> [--to http://host:47889] [--token secret]")
 	}
 	if endpoint == "" {
 		state, err := loadState(c.statePath)
@@ -449,7 +561,7 @@ func (c *cli) cmdSend(args []string) error {
 		device := state.Devices[deviceName]
 		endpoint = fmt.Sprintf("http://%s:%d", device.Host, device.TransferPort)
 	}
-	return sendFile(path, endpoint)
+	return sendFile(path, endpoint, token)
 }
 
 func (c *cli) cmdAdvertise(args []string) error {
@@ -511,6 +623,7 @@ func (c *cli) cmdDiagnose() error {
 	fmt.Println("server:", missingText(firstDeskflowBinary("server")))
 	fmt.Println("client:", missingText(firstDeskflowBinary("client")))
 	fmt.Println("gui:", missingText(firstDeskflowBinary("gui")))
+	fmt.Println("cloudflared:", missingText(firstBinary("cloudflared")))
 	fmt.Println("Devices:", len(state.Devices))
 	fmt.Println("Relationships:", len(state.Relationships))
 	if firstDeskflowBinary("server") == "" || firstDeskflowBinary("client") == "" {
@@ -612,29 +725,38 @@ func parseInt(value string, fallback int) int {
 	return number
 }
 
-func parseSendArgs(args []string) (string, string, error) {
+func parseSendArgs(args []string) (string, string, string, error) {
 	var path string
 	var endpoint string
+	token := getenvDefault("DESKBRIDGE_TOKEN", "")
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--to":
 			i++
 			if i >= len(args) {
-				return "", "", errors.New("--to needs a value")
+				return "", "", "", errors.New("--to needs a value")
 			}
 			endpoint = args[i]
 		case strings.HasPrefix(arg, "--to="):
 			endpoint = strings.TrimPrefix(arg, "--to=")
+		case arg == "--token":
+			i++
+			if i >= len(args) {
+				return "", "", "", errors.New("--token needs a value")
+			}
+			token = args[i]
+		case strings.HasPrefix(arg, "--token="):
+			token = strings.TrimPrefix(arg, "--token=")
 		case strings.HasPrefix(arg, "-"):
-			return "", "", fmt.Errorf("unknown send option: %s", arg)
+			return "", "", "", fmt.Errorf("unknown send option: %s", arg)
 		case path == "":
 			path = arg
 		default:
-			return "", "", fmt.Errorf("unexpected send argument: %s", arg)
+			return "", "", "", fmt.Errorf("unexpected send argument: %s", arg)
 		}
 	}
-	return path, endpoint, nil
+	return path, endpoint, token, nil
 }
 
 func without(items []string, item string) []string {
@@ -792,7 +914,7 @@ func defaultDownloadDir() string {
 	return filepath.Join(home, "Downloads")
 }
 
-func sendFile(path, endpoint string) error {
+func sendFile(path, endpoint, token string) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -811,6 +933,9 @@ func sendFile(path, endpoint string) error {
 	req.Header.Set("Content-Type", mime.TypeByExtension(filepath.Ext(path)))
 	if req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/octet-stream")
+	}
+	if token != "" {
+		req.Header.Set("X-DeskBridge-Token", token)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

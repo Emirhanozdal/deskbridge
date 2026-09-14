@@ -1,7 +1,7 @@
 package main
 
 import (
-	"os"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -49,12 +49,12 @@ func TestRenderDeskflowConfig(t *testing.T) {
 }
 
 func TestParseSendArgsAllowsOptionsAfterPath(t *testing.T) {
-	path, endpoint, err := parseSendArgs([]string{"file.txt", "--to", "http://127.0.0.1:47889"})
+	path, endpoint, token, err := parseSendArgs([]string{"file.txt", "--to", "http://127.0.0.1:47889", "--token", "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if path != "file.txt" || endpoint != "http://127.0.0.1:47889" {
-		t.Fatalf("unexpected parse result: %q %q", path, endpoint)
+	if path != "file.txt" || endpoint != "http://127.0.0.1:47889" || token != "secret" {
+		t.Fatalf("unexpected parse result: %q %q %q", path, endpoint, token)
 	}
 }
 
@@ -67,9 +67,16 @@ func TestCleanUploadName(t *testing.T) {
 	}
 }
 
-func TestBinaryBuilds(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "deskbridge")
-	if err := os.WriteFile(path, []byte("placeholder"), 0644); err != nil {
+func TestAuthorized(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "/upload", nil)
+	if err != nil {
 		t.Fatal(err)
+	}
+	req.Header.Set("X-DeskBridge-Token", "secret")
+	if !authorized(req, "secret") {
+		t.Fatal("expected request to be authorized")
+	}
+	if authorized(req, "other") {
+		t.Fatal("expected request to be rejected")
 	}
 }
