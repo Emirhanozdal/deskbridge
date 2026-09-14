@@ -693,21 +693,76 @@ const receiverHTML = `<!doctype html>
     main { max-width: 720px; margin: 0 auto; padding: 56px 24px; }
     h1 { font-size: 34px; margin: 0 0 10px; letter-spacing: 0; }
     p { color: #b7c0c7; line-height: 1.5; }
-    form { margin-top: 28px; border: 1px solid #2a333b; padding: 22px; background: #171d22; border-radius: 8px; }
-    input[type=file] { display: block; width: 100%; margin-bottom: 18px; color: #dbe4ea; }
+    form { margin-top: 28px; }
+    .dropzone { display: grid; place-items: center; min-height: 220px; border: 2px dashed #3b4a55; padding: 24px; background: #171d22; border-radius: 8px; text-align: center; transition: border-color .12s, background .12s; }
+    .dropzone.dragging { border-color: #18a999; background: #132420; }
+    input[type=file] { position: absolute; inline-size: 1px; block-size: 1px; opacity: 0; pointer-events: none; }
+    input[type=text] { display: block; width: 100%; box-sizing: border-box; margin: 16px 0; padding: 11px 12px; border: 1px solid #2a333b; border-radius: 6px; background: #0f1418; color: #eef2f3; }
     button { background: #18a999; border: 0; color: #061311; padding: 12px 16px; border-radius: 6px; font-weight: 700; cursor: pointer; }
     code { color: #91d7ff; }
+    #status { min-height: 24px; margin-top: 16px; }
   </style>
 </head>
 <body>
   <main>
     <h1>DeskBridge Receiver</h1>
-    <p>Receiving files into <code>{{DIR}}</code> on port <code>{{PORT}}</code>.</p>
-    <form action="/upload" method="post" enctype="multipart/form-data">
-      <input type="file" name="file" required>
+    <p>Receiving into <code>{{DIR}}</code> on port <code>{{PORT}}</code>.</p>
+    <form id="uploadForm">
+      <label class="dropzone" id="dropzone">
+        <span><strong>Drop a file here</strong><br>or click to choose one</span>
+        <input id="fileInput" type="file" name="file" required>
+      </label>
+      <input id="tokenInput" type="text" name="token" placeholder="Token, if receiver requires one">
       <button type="submit">Upload File</button>
     </form>
+    <p id="status"></p>
   </main>
+  <script>
+    const form = document.getElementById('uploadForm');
+    const dropzone = document.getElementById('dropzone');
+    const input = document.getElementById('fileInput');
+    const token = document.getElementById('tokenInput');
+    const status = document.getElementById('status');
+
+    function setFile(file) {
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      status.textContent = file.name + ' ready';
+    }
+
+    ['dragenter', 'dragover'].forEach(name => {
+      dropzone.addEventListener(name, event => {
+        event.preventDefault();
+        dropzone.classList.add('dragging');
+      });
+    });
+    ['dragleave', 'drop'].forEach(name => {
+      dropzone.addEventListener(name, event => {
+        event.preventDefault();
+        dropzone.classList.remove('dragging');
+      });
+    });
+    dropzone.addEventListener('drop', event => {
+      const file = event.dataTransfer.files[0];
+      if (file) setFile(file);
+    });
+    input.addEventListener('change', () => {
+      if (input.files[0]) status.textContent = input.files[0].name + ' ready';
+    });
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (!input.files[0]) return;
+      const body = new FormData();
+      body.append('file', input.files[0]);
+      const headers = {};
+      if (token.value.trim()) headers['X-DeskBridge-Token'] = token.value.trim();
+      status.textContent = 'Uploading...';
+      const response = await fetch('/upload', { method: 'POST', headers, body });
+      status.textContent = response.ok ? await response.text() : 'Upload failed: ' + response.status;
+      if (response.ok) input.value = '';
+    });
+  </script>
 </body>
 </html>`
 

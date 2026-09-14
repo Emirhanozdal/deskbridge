@@ -35,6 +35,13 @@ Debian/Ubuntu:
 sudo apt install deskbridge
 ```
 
+Private GitHub release shortcut for Linux:
+
+```bash
+gh release download v0.1.2 -R Emirhanozdal/deskbridge -p 'deskbridge_*.deb'
+sudo apt install ./deskbridge_*.deb
+```
+
 Windows is planned for phase 2. The Go CLI already has a cross-build target, but
 the installer, winget/chocolatey manifests, Windows service mode, and
 Deskflow/Synergy path detection still need proper Windows testing.
@@ -77,7 +84,7 @@ deskbridge receive --dir ~/Downloads
 ```
 
 This runs as a background-style HTTP API. It does not need a browser UI.
-Use `--ui` only when you explicitly want a temporary browser upload form.
+Use `--ui` only when you explicitly want a temporary browser drag-and-drop form.
 
 Send a file from either machine:
 
