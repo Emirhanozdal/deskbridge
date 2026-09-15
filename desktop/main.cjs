@@ -10,10 +10,11 @@ const { randomUUID } = require('node:crypto');
 const { readLayout, changeLayout } = require('./layout.cjs');
 const { readFiles, fileItem } = require('./clipboard.cjs');
 const { resolveEngine } = require('./engine.cjs');
+const { inputSettings } = require('./input-settings.cjs');
 
 app.setName('DeskBridge');
 if (!app.requestSingleInstanceLock()) app.quit();
-let win, tray, relayProcess, coreProcess, closing = false, pollBusy = false, clipboardBusy = false;
+let win, tray, relayProcess, coreProcess, coreRestartTimer, closing = false, pollBusy = false, clipboardBusy = false;
 let connected = false, clipboardSupported = false, lastClipboard = '', error = '', transfers = [];
 let preferences = { clipboard: false, direction: 'left', autoStart: false };
 const configDir = process.platform === 'darwin' ? path.join(os.homedir(),'Library','Application Support','deskbridge') : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(),'.config'),'deskbridge');
@@ -123,38 +124,40 @@ async function applyLayout(input) {
 }
 async function restartCore() {
   const engine=resolveEngine(process.resourcesPath,process.env.DESKBRIDGE_INPUT_BIN);
-  if(process.platform!=='darwin')throw Error('Linux motor yonetimi henuz hazir degil');
   if(!engine)throw Error('DeskBridge klavye motoru bulunamadi');
-  let config=fs.readFileSync(settingsFile,'utf8');
-  config=config.replace(/^\[server\][\s\S]*?(?=^\[|$(?![\s\S]))/m,'');
-  config+='\n[server]\nexternalConfig=true\nexternalConfigFile='+layoutFile+'\n';
-  const managed=path.join(deskflowDir,'DeskBridge.conf');fs.writeFileSync(managed,config,{mode:0o600});
+  const mode=relayConfig().side==='a'?'server':'client';
+  if(mode==='server'&&!fs.existsSync(layoutFile))throw Error('Ekran yerlesim dosyasi bulunamadi');
+  const managed=path.join(configDir,'input.ini');
+  fs.mkdirSync(configDir,{recursive:true,mode:0o700});
+  fs.writeFileSync(managed,inputSettings(mode,layout.local||os.hostname(),layoutFile),{mode:0o600});
   const serviceFile=path.join(os.homedir(),'Library','LaunchAgents','com.deskbridge.input.plist');
-  if(fs.existsSync(serviceFile)){
+  if(process.platform==='darwin'&&fs.existsSync(serviceFile)){
     const plist=require('plist');const service=plist.parse(fs.readFileSync(serviceFile,'utf8'));
-    service.ProgramArguments=[engine,'server','--settings',managed];
+    service.ProgramArguments=[engine,mode,'--settings',managed];
     fs.writeFileSync(serviceFile,plist.build(service),{mode:0o600});
     execFileSync('/bin/launchctl',['bootout','gui/'+process.getuid()+'/com.deskbridge.input']);
     execFileSync('/bin/launchctl',['bootstrap','gui/'+process.getuid(),serviceFile]);
     return;
   }
   if(coreProcess){coreProcess.kill();coreProcess=null;}
-  let pids=[];
-  try{pids=execFileSync('/usr/sbin/lsof',['-t','-iTCP:24800','-sTCP:LISTEN'],{encoding:'utf8'}).trim().split(/\s+/).filter(Boolean);}catch{}
-  for(const pid of pids){
-    const command=execFileSync('/bin/ps',['-p',pid,'-o','comm='],{encoding:'utf8'}).trim();
-    if(command!==engine)throw Error('Klavye portu baska bir uygulama tarafindan kullaniliyor');
-    process.kill(Number(pid),'SIGTERM');
+  if(mode==='server'){
+    let pids=[];
+    try{pids=execFileSync('/usr/sbin/lsof',['-t','-iTCP:24800','-sTCP:LISTEN'],{encoding:'utf8'}).trim().split(/\s+/).filter(Boolean);}catch{}
+    for(const pid of pids){
+      const command=execFileSync('/bin/ps',['-p',pid,'-o','comm='],{encoding:'utf8'}).trim();
+      if(command!==engine)throw Error('Klavye portu baska bir uygulama tarafindan kullaniliyor');
+      process.kill(Number(pid),'SIGTERM');
+    }
+    for(let attempt=0;attempt<30;attempt++){
+      const inUse=await new Promise(resolve=>{const s=net.connect(24800,'127.0.0.1');s.on('connect',()=>{s.destroy();resolve(true);});s.on('error',()=>resolve(false));s.setTimeout(100,()=>{s.destroy();resolve(true);});});
+      if(!inUse)break;
+      await new Promise(resolve=>setTimeout(resolve,100));
+      if(attempt===29)throw Error('Mevcut klavye oturumu kapanmadi');
+    }
   }
-  for(let attempt=0;attempt<30;attempt++){
-    const inUse=await new Promise(resolve=>{const s=net.connect(24800,'127.0.0.1');s.on('connect',()=>{s.destroy();resolve(true);});s.on('error',()=>resolve(false));s.setTimeout(100,()=>{s.destroy();resolve(true);});});
-    if(!inUse)break;
-    await new Promise(resolve=>setTimeout(resolve,100));
-    if(attempt===29)throw Error('Mevcut klavye oturumu kapanmadi');
-  }
-  coreProcess=spawn(engine,['server','--settings',managed],{stdio:['ignore','pipe','pipe']});
+  coreProcess=spawn(engine,[mode,'--settings',managed],{stdio:['ignore','pipe','pipe']});
   coreProcess.on('error',e=>{error=e.message;emit();});
-  coreProcess.on('exit',code=>{coreProcess=null;if(code){error='Klavye motoru durdu ('+code+')';emit();}});
+  coreProcess.on('exit',code=>{coreProcess=null;if(code&&!closing){error='Klavye motoru yeniden baslatiliyor ('+code+')';emit();clearTimeout(coreRestartTimer);coreRestartTimer=setTimeout(()=>restartCore().catch(e=>{error=e.message;emit();}),5000);}});
 }
 function handlers(){
   const handle=(name,fn)=>ipcMain.handle(name,async(event,...args)=>{
@@ -181,13 +184,13 @@ function handlers(){
 }
 function showWindow(){if(win){win.show();return;}win=new BrowserWindow({width:1060,height:740,minWidth:760,minHeight:600,title:'DeskBridge',backgroundColor:'#f5f7f8',webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true}});win.loadFile(path.join(__dirname,'index.html'));win.webContents.setWindowOpenHandler(()=>({action:'deny'}));win.webContents.on('will-navigate',e=>e.preventDefault());win.on('close',e=>{if(!closing){e.preventDefault();win.hide();}});}
 app.on('second-instance',showWindow);app.on('activate',showWindow);
-app.on('before-quit',()=>{closing=true;relayProcess?.kill();coreProcess?.kill();});
+app.on('before-quit',()=>{closing=true;clearTimeout(coreRestartTimer);relayProcess?.kill();coreProcess?.kill();});
 app.whenReady().then(async()=>{
   preferences={...preferences,...readJSON(prefsFile,{})};transfers=readJSON(historyFile,[]);readCurrentLayout();handlers();
   Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'DeskBridge',submenu:[{label:'DeskBridge',click:showWindow},{type:'separator'},{role:'quit'}]},{role:'editMenu'},{role:'windowMenu'}]));
   showWindow();
   const icon=nativeImage.createFromPath(path.join(__dirname,'icon.png')).resize({width:20,height:20});
   tray=new Tray(icon);tray.setToolTip('DeskBridge');tray.setContextMenu(Menu.buildFromTemplate([{label:'DeskBridge',click:showWindow},{label:'Cikis',click:()=>app.quit()}]));tray.on('click',showWindow);
-  await poll();if(!connected&&relayConfig().code)startRelay();
+  await poll();if(relayConfig().code){if(!connected)startRelay();await restartCore().catch(e=>{error=e.message;emit();});}
   setInterval(poll,2000);setInterval(pollClipboard,900);
 });

@@ -61,11 +61,15 @@ Supported packages: Apple Silicon macOS, x86_64 Linux. Windows is phase 2.
 The bare npm registry name is not published; use the GitHub npx command for the
 legacy terminal build. Packaged desktop releases do not require Node.js.
 
-Debian/Ubuntu package installation:
+Linux Mint/Debian/Ubuntu desktop installation:
 
 ```bash
 curl -fL --retry 5 https://emirhanozdal.github.io/deskbridge/i -o /tmp/db.sh && bash /tmp/db.sh
 ```
+
+The desktop package contains the relay and input engine. Do not install or open
+Deskflow separately. Existing pairing settings are reused from the DeskBridge
+user configuration directory.
 
 ## Verification and Limits
 
@@ -80,11 +84,11 @@ placement. Unit tests cover clipboard formats, layout preservation, engine
 discovery, upload safety and relay authentication. The integrated input engine
 has been compiled and packaged on Apple Silicon macOS.
 
-The integrated engine still needs a physical macOS-to-Linux interoperability
-run and macOS input-permission validation before it replaces the previously
-verified compatibility engine on an existing installation. Linux desktop
-packaging and Apple notarization are not complete. `doctor` reports local
-dependency detection, not proof of a connected or operational KVM.
+The integrated engine is active on the development Mac and has passed macOS
+input-permission validation. The Linux desktop package is built on Ubuntu 24.04;
+a physical Linux Mint interoperability run is still required. Apple notarization
+is not complete. `doctor` reports local dependency detection, not proof of a
+connected or operational KVM.
 
 The legacy `tunnel` command uses cloudflared on 7844; it is no longer the default.
 That route timed out on the tested school network. `receive-local` explicitly

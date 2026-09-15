@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=DeskBridge
+Comment=Share keyboard, mouse and files
+Exec=/opt/deskbridge/DeskBridge
+Icon=deskbridge
+Terminal=false
+Categories=Network;Utility;
+StartupWMClass=DeskBridge

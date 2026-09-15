@@ -16,10 +16,16 @@ download() {
     return 1
   fi
 }
-base=https://github.com/Emirhanozdal/deskbridge/releases/download/v0.2.0
-download DeskBridge "$base/deskbridge_0.2.0_amd64.deb" "$tmpdir/deskbridge_0.2.0_amd64.deb"
-download checksums "$base/SHA256SUMS" "$tmpdir/SHA256SUMS"
-(cd "$tmpdir" && sha256sum --check SHA256SUMS)
-sudo apt install -y "$tmpdir/deskbridge_0.2.0_amd64.deb"
-echo 'Installed. Run: deskbridge'
-echo 'Keyboard/mouse sharing additionally requires Deskflow on both devices.'
+base=https://github.com/Emirhanozdal/deskbridge/releases/download/v0.3.0
+package="$tmpdir/deskbridge-desktop_0.3.0_amd64.deb"
+download DeskBridge "$base/deskbridge-desktop_0.3.0_amd64.deb" "$package"
+download checksum "$base/deskbridge-desktop_0.3.0_amd64.deb.sha256" "$package.sha256"
+expected="$(cut -d ' ' -f 1 "$package.sha256")"
+actual="$(sha256sum "$package" | cut -d ' ' -f 1)"
+[ "$expected" = "$actual" ] || { echo 'Checksum verification failed.' >&2; exit 1; }
+sudo apt install -y "$package"
+systemctl --user disable --now deskbridge.service >/dev/null 2>&1 || true
+mkdir -p "$HOME/.config/autostart"
+cp /usr/share/applications/deskbridge.desktop "$HOME/.config/autostart/deskbridge.desktop"
+nohup /opt/deskbridge/DeskBridge >"${TMPDIR:-/tmp}/deskbridge-desktop.log" 2>&1 &
+echo 'DeskBridge installed and started. No separate Deskflow application is required.'

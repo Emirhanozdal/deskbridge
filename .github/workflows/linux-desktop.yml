@@ -1,0 +1,66 @@
+name: Linux desktop
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build qt6-base-dev qt6-tools-dev \
+            xorg-dev libx11-dev libxtst-dev libssl-dev libxkbfile-dev \
+            libxkbregistry-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libei-dev libportal-dev libxinerama-dev libxrandr-dev
+      - name: Test
+        run: |
+          go test ./...
+          npm ci --prefix desktop
+          npm test --prefix desktop
+      - name: Build relay and input engine
+        run: |
+          mkdir -p build work/linux-engine
+          go build -o build/deskbridge ./cmd/deskbridge
+          cmake -S engine/src -B work/linux-engine -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DDESKBRIDGE_ENGINE_ONLY=ON
+          cmake --build work/linux-engine --target deskflow-core -j 4
+      - name: Package desktop
+        run: |
+          node desktop/node_modules/@electron/packager/bin/electron-packager.mjs \
+            desktop DeskBridge --platform=linux --arch=x64 --out=work/dist \
+            --overwrite --asar --app-version=0.3.0 --build-version=0.3.0 \
+            --extra-resource=build/deskbridge \
+            --extra-resource=work/linux-engine/bin/deskbridge-input
+          bash scripts/package-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deskbridge-linux-amd64
+          path: |
+            outputs/deskbridge-desktop_0.3.0_amd64.deb
+            outputs/deskbridge-desktop_0.3.0_amd64.deb.sha256
+      - name: Publish release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --title "DeskBridge 0.3.0" \
+            --notes "Single-app Linux build with the integrated DeskBridge input engine." \
+            outputs/deskbridge-desktop_0.3.0_amd64.deb \
+            outputs/deskbridge-desktop_0.3.0_amd64.deb.sha256

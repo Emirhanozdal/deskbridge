@@ -3,6 +3,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const plist = require('../desktop/node_modules/plist');
+const { inputSettings } = require('../desktop/input-settings.cjs');
 
 if (process.platform !== 'darwin') throw Error('This installer supports macOS only');
 const root = path.resolve(__dirname, '..');
@@ -14,6 +15,12 @@ const logs = path.join(os.homedir(), 'Library', 'Logs', 'DeskBridge');
 const agents = path.join(os.homedir(), 'Library', 'LaunchAgents');
 fs.mkdirSync(logs, { recursive: true });
 fs.mkdirSync(agents, { recursive: true });
+const inputConfigDir = path.join(os.homedir(), 'Library', 'Application Support', 'deskbridge');
+const inputConfig = path.join(inputConfigDir, 'input.ini');
+const layout = path.join(os.homedir(), 'Library', 'Deskflow', 'deskflow-server.conf');
+if (!fs.existsSync(layout)) throw Error('DeskBridge screen layout is missing: ' + layout);
+fs.mkdirSync(inputConfigDir, { recursive: true, mode: 0o700 });
+fs.writeFileSync(inputConfig, inputSettings('server', os.hostname(), layout), { mode: 0o600 });
 const services = [
   {
     label: 'com.deskbridge.relay',
@@ -22,7 +29,7 @@ const services = [
   },
   {
     label: 'com.deskbridge.input',
-    arguments: [path.join(installed, 'Contents', 'Resources', 'DeskBridge Input.app', 'Contents', 'MacOS', 'deskbridge-input'), 'server'],
+    arguments: [path.join(installed, 'Contents', 'Resources', 'DeskBridge Input.app', 'Contents', 'MacOS', 'deskbridge-input'), 'server', '--settings', inputConfig],
     output: 'input'
   }
 ];
