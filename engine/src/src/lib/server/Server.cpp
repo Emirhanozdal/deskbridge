@@ -12,6 +12,7 @@
 #include "base/Log.h"
 #include "deskflow/AppUtil.h"
 #include "deskflow/DeskflowException.h"
+#include "deskflow/DragInformation.h"
 #include "deskflow/IPlatformScreen.h"
 #include "deskflow/OptionTypes.h"
 #include "deskflow/PacketStreamFilter.h"
@@ -28,6 +29,8 @@
 #ifdef _WIN32
 #include <algorithm>
 #include <array>
+#include <filesystem>
+#include <system_error>
 #endif
 #include <cmath>
 #include <cstdlib>
@@ -369,6 +372,12 @@ bool Server::isLockedToScreen() const
     return false;
   }
 
+  // never lock the cursor to the screen while the user is dragging files off
+  // it: the drag must be able to cross the screen edge onto the peer.
+  if (m_screen->getPlatformScreen()->isDraggingStarted()) {
+    return false;
+  }
+
   // locked if we say we're locked
   if (isLockedToScreenServer()) {
     if (!m_defaultLockToScreenState) {
@@ -503,10 +512,53 @@ void Server::switchScreen(BaseClientProxy *dst, int32_t x, int32_t y, bool forSc
       }
     }
 
+    // if the user is dragging files off the primary screen, hand the drag to
+    // the newly-active client so the file(s) land on the peer.
+    if (dst != m_primaryClient && m_screen->getPlatformScreen()->isDraggingStarted()) {
+      sendDragInfoToClient(dst);
+    }
+
     auto *info = new Server::SwitchToScreenInfo(m_active->getName());
     m_events->addEvent(Event(EventTypes::ServerScreenSwitched, this, info));
   } else {
     m_active->mouseMove(x, y);
+  }
+}
+
+void Server::sendDragInfoToClient(BaseClientProxy *dst)
+{
+  IPlatformScreen *screen = m_screen->getPlatformScreen();
+
+  DragFileList files = screen->getDraggingFileList();
+  if (files.empty()) {
+    const std::string one = screen->getDraggingFilename();
+    if (one.empty()) {
+      return;
+    }
+    files.emplace_back(one, 0);
+  }
+
+  // resolve on-disk sizes (full paths are kept locally; only basenames go over
+  // the wire, see DragInformation::setupDragInfo)
+  for (auto &f : files) {
+    std::error_code ec;
+    const auto sz = std::filesystem::file_size(f.getFilename(), ec);
+    f.setFilesize(ec ? 0 : static_cast<size_t>(sz));
+  }
+
+  std::string info;
+  const uint32_t count = DragInformation::setupDragInfo(files, info);
+  if (count == 0) {
+    return;
+  }
+
+  LOG_INFO("drag: sending %u file(s) to \"%s\"", count, getName(dst).c_str());
+  dst->sendDragInfo(count, info.c_str(), info.size());
+
+  // stream the file bytes; StreamChunker enqueues chunks on the event queue so
+  // this does not block the input loop.
+  for (const auto &f : files) {
+    StreamChunker::sendFile(f.getFilename(), m_events, dst);
   }
 }
 

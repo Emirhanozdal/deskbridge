@@ -309,6 +309,14 @@ ServerProxy::ConnectionResult ServerProxy::parseMessage(const uint8_t *code)
     secureInputNotification();
   }
 
+  else if (memcmp(code, kMsgDDragInfo, 4) == 0) {
+    dragInfoReceived();
+  }
+
+  else if (memcmp(code, kMsgDFileTransfer, 4) == 0) {
+    fileChunkReceived();
+  }
+
   else if (memcmp(code, kMsgCClose, 4) == 0) {
     // server wants us to hangup
     LOG_VERBOSE("recv close");
@@ -847,6 +855,24 @@ void ServerProxy::secureInputNotification()
   std::string app;
   ProtocolUtil::readf(m_stream, kMsgDSecureInputNotification + 4, &app);
   LOG_INFO("application \"%s\" is blocking the keyboard", app.c_str());
+}
+
+void ServerProxy::dragInfoReceived()
+{
+  // cross-screen drag-and-drop: file names + sizes announced by the server
+  uint32_t fileCount = 0;
+  std::string data;
+  ProtocolUtil::readf(m_stream, kMsgDDragInfo + 4, &fileCount, &data);
+  m_client->dragInfoReceived(fileCount, data);
+}
+
+void ServerProxy::fileChunkReceived()
+{
+  // cross-screen drag-and-drop: one file content chunk (written straight to disk)
+  uint8_t mark = 0;
+  std::string data;
+  ProtocolUtil::readf(m_stream, kMsgDFileTransfer + 4, &mark, &data);
+  m_client->fileChunkReceived(mark, data);
 }
 
 void ServerProxy::setServerLanguages()

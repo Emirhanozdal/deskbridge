@@ -34,6 +34,8 @@
 #include "platform/OSXScreenSaver.h"
 
 #include <AppKit/NSEvent.h>
+#include <AppKit/NSPasteboard.h>
+#include <Foundation/Foundation.h>
 #include <AvailabilityMacros.h>
 #include <IOKit/hidsystem/event_status_driver.h>
 #include <dispatch/dispatch.h>
@@ -1029,6 +1031,70 @@ bool OSXScreen::onMouseMove(CGEventRef event)
   return true;
 }
 
+bool OSXScreen::isDraggingStarted()
+{
+  return m_draggingStarted;
+}
+
+std::string OSXScreen::getDraggingFilename()
+{
+  if (m_draggingFileList.empty()) {
+    return {};
+  }
+  return m_draggingFileList.front().getFilename();
+}
+
+DragFileList OSXScreen::getDraggingFileList()
+{
+  return m_draggingFileList;
+}
+
+const std::string &OSXScreen::getDropTarget() const
+{
+  return m_dropTarget;
+}
+
+void OSXScreen::setDropTarget(const std::string &target)
+{
+  m_dropTarget = target;
+}
+
+void OSXScreen::updateDraggingState()
+{
+  @autoreleasepool {
+    NSPasteboard *drag = [NSPasteboard pasteboardWithName:NSPasteboardNameDrag];
+    const NSInteger changeCount = [drag changeCount];
+    // cheap fast-path: nothing new on the drag pasteboard since last check
+    if (static_cast<long>(changeCount) == m_dragPboardChangeCount) {
+      return;
+    }
+    m_dragPboardChangeCount = static_cast<long>(changeCount);
+
+    NSArray *urls = [drag readObjectsForClasses:@[[NSURL class]]
+                                        options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
+    DragFileList files;
+    for (NSURL *url in urls) {
+      if (url.isFileURL && url.path != nil) {
+        files.emplace_back(std::string(url.path.UTF8String), 0);
+      }
+    }
+    if (!files.empty()) {
+      m_draggingFileList = std::move(files);
+      if (!m_draggingStarted) {
+        LOG_INFO("drag: detected %zu dragged file(s) leaving this screen", m_draggingFileList.size());
+      }
+      m_draggingStarted = true;
+    }
+  }
+}
+
+void OSXScreen::resetDraggingState()
+{
+  m_draggingStarted = false;
+  m_draggingFileList.clear();
+  m_dragPboardChangeCount = -1;
+}
+
 bool OSXScreen::onMouseButton(bool pressed, uint16_t macButton)
 {
   // Buttons 2 and 3 are inverted on the mac
@@ -1692,10 +1758,16 @@ CGEventRef OSXScreen::handleCGInputEvent(CGEventTapProxy proxy, CGEventType type
   case kCGEventRightMouseUp:
   case kCGEventOtherMouseUp:
     screen->onMouseButton(false, CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber) + 1);
+    // the drag (if any) has ended now that the physical button is released
+    screen->resetDraggingState();
     break;
   case kCGEventLeftMouseDragged:
   case kCGEventRightMouseDragged:
   case kCGEventOtherMouseDragged:
+    // while a button is held and moving, watch the drag pasteboard so the
+    // server can hand any dragged file(s) to the peer as the cursor crosses.
+    screen->updateDraggingState();
+    [[fallthrough]];
   case kCGEventMouseMoved:
     // off-screen the cursor is frozen (see leave()), so fall through to consume
     // the move below instead of returning (leaking) it to local apps.
