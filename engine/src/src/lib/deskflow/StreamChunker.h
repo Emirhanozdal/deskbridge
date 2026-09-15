@@ -19,4 +19,7 @@ public:
       const std::string_view &data, size_t size, ClipboardID id, uint32_t sequence, IEventQueue *events,
       void *eventTarget
   );
+
+  //! Stream a file from disk to the peer as FileChunk messages (drag-and-drop).
+  static void sendFile(const std::string &filename, IEventQueue *events, void *eventTarget);
 };

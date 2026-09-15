@@ -94,6 +94,19 @@ public:
   bool isPrimary() const override;
   std::string getSecureInputApp() const override;
 
+  // DeskBridge cross-screen drag-and-drop (source side)
+  bool isDraggingStarted() override;
+  std::string getDraggingFilename() override;
+  DragFileList getDraggingFileList() override;
+  const std::string &getDropTarget() const override;
+  void setDropTarget(const std::string &target) override;
+
+  //! Poll the macOS drag pasteboard while a drag is in progress (cheap: only
+  //! reads file URLs when the pasteboard changeCount actually changes).
+  void updateDraggingState();
+  //! Clear drag state once the physical mouse button is released.
+  void resetDraggingState();
+
   void waitForCarbonLoop() const;
 
 protected:
@@ -313,6 +326,11 @@ private:
 
   std::unique_ptr<Thread> m_getDropTargetThread;
   std::string m_dropTarget;
+
+  // cross-screen drag-and-drop (source side)
+  bool m_draggingStarted = false;
+  DragFileList m_draggingFileList;
+  long m_dragPboardChangeCount = -1;
 
   Mutex *m_carbonLoopMutex;
   CondVar<bool> *m_carbonLoopReady;

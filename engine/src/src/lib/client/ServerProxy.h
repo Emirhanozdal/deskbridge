@@ -100,6 +100,8 @@ private:
   void queryInfo();
   void infoAcknowledgment();
   void secureInputNotification();
+  void dragInfoReceived();
+  void fileChunkReceived();
   void setServerLanguages();
   void setActiveServerLanguage(const std::string_view &language);
 

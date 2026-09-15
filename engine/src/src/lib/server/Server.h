@@ -336,6 +336,10 @@ private:
   void onMouseMoveSecondary(int32_t dx, int32_t dy);
   void onMouseWheel(int32_t xDelta, int32_t yDelta);
 
+  // hand an in-progress file drag on the primary screen over to a client that
+  // the cursor has just crossed onto (DeskBridge cross-screen drag-and-drop)
+  void sendDragInfoToClient(BaseClientProxy *dst);
+
   // add client to list and attach event handlers for client
   bool addClient(BaseClientProxy *);
 

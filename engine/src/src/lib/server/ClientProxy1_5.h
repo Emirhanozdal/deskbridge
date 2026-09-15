@@ -18,7 +18,7 @@ public:
   ClientProxy1_5(const std::string &name, deskflow::IStream *adoptedStream, Server *server, IEventQueue *events);
   ClientProxy1_5(ClientProxy1_5 const &) = delete;
   ClientProxy1_5(ClientProxy1_5 &&) = delete;
-  ~ClientProxy1_5() override = default;
+  ~ClientProxy1_5() override;
 
   ClientProxy1_5 &operator=(ClientProxy1_5 const &) = delete;
   ClientProxy1_5 &operator=(ClientProxy1_5 &&) = delete;
@@ -26,6 +26,9 @@ public:
   void sendDragInfo(uint32_t fileCount, const char *info, size_t size) override;
   void fileChunkSending(uint8_t mark, char *data, size_t dataSize) override;
   bool parseMessage(const uint8_t *code) override;
-  void fileChunkReceived() const;
-  void dragInfoReceived() const;
+  void fileChunkReceived();
+  void dragInfoReceived();
+
+private:
+  IEventQueue *m_events = nullptr;
 };

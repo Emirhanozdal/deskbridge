@@ -9,11 +9,14 @@
 #pragma once
 
 #include "deskflow/ClipboardTypes.h"
+#include "deskflow/DragInformation.h"
 #include "deskflow/IKeyState.h"
 #include "deskflow/IPrimaryScreen.h"
 #include "deskflow/IScreen.h"
 #include "deskflow/ISecondaryScreen.h"
 #include "deskflow/OptionTypes.h"
+
+#include <string>
 
 class IClipboard;
 
@@ -177,4 +180,47 @@ protected:
   \c getEventTarget().
   */
   virtual void handleSystemEvent(const Event &event) = 0;
+
+public:
+  //! @name drag-and-drop (DeskBridge cross-screen file drag)
+  //@{
+
+  //! True while the user is dragging file(s) off this (primary) screen.
+  virtual bool isDraggingStarted()
+  {
+    return false;
+  }
+
+  //! Absolute path of the primary file currently being dragged, if any.
+  virtual std::string getDraggingFilename()
+  {
+    return {};
+  }
+
+  //! Every file currently being dragged off this (primary) screen.
+  virtual DragFileList getDraggingFileList()
+  {
+    return {};
+  }
+
+  //! Begin a synthetic drag of the received files on this (secondary) screen.
+  virtual void fakeDraggingFiles(const DragFileList &)
+  {
+    // default: unsupported on this platform
+  }
+
+  //! Directory into which received drag files should be written.
+  virtual const std::string &getDropTarget() const
+  {
+    static const std::string empty;
+    return empty;
+  }
+
+  //! Configure the directory into which received drag files are written.
+  virtual void setDropTarget(const std::string &)
+  {
+    // default: unsupported on this platform
+  }
+
+  //@}
 };

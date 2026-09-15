@@ -13,6 +13,7 @@
 #include "base/Event.h"
 #include "base/EventTypes.h"
 #include "common/Enums.h"
+#include "deskflow/FileReceiver.h"
 #include "deskflow/IClipboard.h"
 #include "net/NetworkAddress.h"
 
@@ -190,7 +191,12 @@ public:
   void setOptions(const OptionsList &options) override;
   std::string getName() const override;
 
+  // DeskBridge cross-screen drag-and-drop (receiving from the server)
+  void dragInfoReceived(uint32_t fileCount, const std::string &data);
+  void fileChunkReceived(uint8_t mark, const std::string &data);
+
 private:
+  std::string dropDirectory() const;
   void saveRelativeRestorePosition();
   void sendClipboard(ClipboardID);
   void sendEvent(deskflow::EventTypes);
@@ -238,6 +244,7 @@ private:
   IEventQueue *m_events = nullptr;
   bool m_useSecureNetwork = false;
   bool m_enableClipboard = true;
+  FileReceiver m_fileReceiver;
   bool m_relativeMouseMoves = false;
   bool m_hasRelativeRestorePosition = false;
   int32_t m_relativeRestoreX = 0;

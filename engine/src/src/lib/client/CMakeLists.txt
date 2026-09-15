@@ -11,3 +11,10 @@ add_library(client STATIC
 )
 
 target_link_libraries(client PUBLIC common)
+
+if(UNIX)
+  # Client.cpp uses app-lib symbols (FileReceiver, DragInformation, ...); GNU ld
+  # is archive-order sensitive so the dependency must be explicit (macOS ld64
+  # resolves it regardless, which is why this only bit the Linux build).
+  target_link_libraries(client PUBLIC app)
+endif()

@@ -16,6 +16,7 @@
 #include "common/Settings.h"
 #include "deskflow/Clipboard.h"
 #include "deskflow/DeskflowException.h"
+#include "deskflow/DragInformation.h"
 #include "deskflow/IPlatformScreen.h"
 #include "deskflow/PacketStreamFilter.h"
 #include "deskflow/ProtocolTypes.h"
@@ -372,6 +373,43 @@ void Client::saveRelativeRestorePosition()
 std::string Client::getName() const
 {
   return m_name;
+}
+
+std::string Client::dropDirectory() const
+{
+  // 1) explicit drop target set on the screen (e.g. via options)
+  if (m_screen != nullptr) {
+    const std::string &target = m_screen->getPlatformScreen()->getDropTarget();
+    if (!target.empty()) {
+      return target;
+    }
+  }
+  // 2) DeskBridge override
+  if (const char *env = std::getenv("DESKBRIDGE_DROP_DIR"); env != nullptr && env[0] != '\0') {
+    return env;
+  }
+  // 3) fall back to ~/Downloads
+  if (const char *home = std::getenv("HOME"); home != nullptr && home[0] != '\0') {
+    return std::string(home) + "/Downloads";
+  }
+  return ".";
+}
+
+void Client::dragInfoReceived(uint32_t fileCount, const std::string &data)
+{
+  DragFileList files;
+  DragInformation::parseDragInfo(files, fileCount, data);
+  LOG_INFO("drag: incoming %u file(s) from server", fileCount);
+  m_fileReceiver.setDropDirectory(dropDirectory());
+  m_fileReceiver.setDragFiles(std::move(files));
+}
+
+void Client::fileChunkReceived(uint8_t mark, const std::string &data)
+{
+  const std::string written = m_fileReceiver.onChunk(mark, data);
+  if (!written.empty()) {
+    LOG_INFO("drag: file received -> %s", written.c_str());
+  }
 }
 
 void Client::sendClipboard(ClipboardID id)

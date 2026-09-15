@@ -16,6 +16,7 @@ app.setName('DeskBridge');
 if (!app.requestSingleInstanceLock()) app.quit();
 let win, tray, relayProcess, coreProcess, coreRestartTimer, closing = false, pollBusy = false, clipboardBusy = false;
 let connected = false, clipboardSupported = false, lastClipboard = '', error = '', transfers = [];
+let latency = null, lastSeen = 0;
 let preferences = { clipboard: false, direction: 'left', autoStart: false };
 const configDir = process.platform === 'darwin' ? path.join(os.homedir(),'Library','Application Support','deskbridge') : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(),'.config'),'deskbridge');
 const relayFile = path.join(configDir,'relay.json');
@@ -35,7 +36,7 @@ function binary() {
   const locations=[path.join(process.resourcesPath,'deskbridge'), path.join(__dirname,'..','build','deskbridge')];
   return locations.find(p=>fs.existsSync(p)) || 'deskbridge';
 }
-function snapshot() { const cfg=relayConfig(); return { connected, clipboardSupported, error, layout, preferences, transfers:transfers.slice(0,60), paired:!!cfg.code, side:cfg.side, managed:!!relayProcess, version:'0.3.2' }; }
+function snapshot() { const cfg=relayConfig(); return { connected, clipboardSupported, error, layout, preferences, transfers:transfers.slice(0,60), paired:!!cfg.code, side:cfg.side, managed:!!relayProcess, latency, lastSeen, engineRunning:!!coreProcess, version:'0.3.3' }; }
 function emit() { if(win && !win.isDestroyed()) win.webContents.send('changed',snapshot()); }
 function record(item) { transfers.unshift({id:randomUUID(),time:Date.now(),...item}); transfers=transfers.slice(0,200); saveJSON(historyFile,transfers); emit(); return transfers[0]; }
 function request(endpoint, method='GET', body) {
@@ -96,9 +97,10 @@ async function pollClipboard() {
 }
 async function poll() {
   if(pollBusy)return;pollBusy=true;
-  try{const health=await request('/health');connected=health.status===200 && JSON.parse(health.text).app==='deskbridge';
-    if(connected){const caps=await request('/capabilities');clipboardSupported=caps.status===200&&!!JSON.parse(caps.text).clipboardFiles;}
-  }catch{connected=false;clipboardSupported=false;}finally{pollBusy=false;emit();}
+  try{const t0=Date.now();const health=await request('/health');connected=health.status===200 && JSON.parse(health.text).app==='deskbridge';
+    if(connected){latency=Date.now()-t0;lastSeen=Date.now();const caps=await request('/capabilities');clipboardSupported=caps.status===200&&!!JSON.parse(caps.text).clipboardFiles;}
+    else{latency=null;}
+  }catch{connected=false;clipboardSupported=false;latency=null;}finally{pollBusy=false;emit();}
 }
 function startRelay() {
   if(process.platform==='darwin' && fs.existsSync(path.join(os.homedir(),'Library','LaunchAgents','com.deskbridge.relay.plist'))){
