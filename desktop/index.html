@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'"><title>DeskBridge</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header><div class="brand"><i data-lucide="panels-top-left"></i><strong>DeskBridge</strong><span class="version">0.3</span></div><div id="connection" class="connection"><span class="dot"></span><span id="connection-label">Kontrol ediliyor</span></div><button class="icon-button" id="reconnect" title="Baglan" aria-label="Baglan"><i data-lucide="plug-zap"></i></button></header>
+<nav aria-label="Gorunum"><button class="tab active" data-view="devices"><i data-lucide="monitor"></i>Cihazlar</button><button class="tab" data-view="transfers"><i data-lucide="arrow-left-right"></i>Aktarimlar<span id="count">0</span></button><button class="tab" data-view="settings"><i data-lucide="settings-2"></i>Ayarlar</button></nav>
+<main>
+<section id="devices" class="view active">
+<div class="section-heading"><div><span class="eyebrow">CALISMA ALANI</span><h1>Cihaz yerlesimi</h1></div><button id="apply" class="primary" disabled><i data-lucide="check"></i>Uygula</button></div>
+<div class="workspace">
+<div id="layout-board" class="layout-board">
+<button class="slot" data-direction="up" aria-label="Diger cihazi uste yerlestir"></button>
+<button class="slot" data-direction="left" aria-label="Diger cihazi sola yerlestir"></button>
+<div class="device local"><div class="screen"><i data-lucide="monitor"></i><span>BU CIHAZ</span></div><div class="stand"></div><strong id="local-name">Mac</strong><small>Klavye ve mouse</small></div>
+<button class="slot" data-direction="right" aria-label="Diger cihazi saga yerlestir"></button>
+<button class="slot" data-direction="down" aria-label="Diger cihazi alta yerlestir"></button>
+<div class="device peer" id="peer-device" draggable="true" tabindex="0"><div class="screen"><i data-lucide="laptop"></i><span id="peer-status">ESLESTIRILDI</span></div><div class="stand"></div><strong id="peer-name">Linux</strong><small id="peer-position">Sol tarafta</small></div>
+</div>
+<aside><div class="aside-title"><i data-lucide="sliders-horizontal"></i><h2>Yerlesim</h2></div><label class="field-label" for="peer-select">Diger cihaz</label><select id="peer-select"></select><label class="field-label">Konum</label><div class="direction-picker"><button data-move="left" title="Sol" aria-label="Sol"><i data-lucide="arrow-left"></i></button><button data-move="up" title="Ust" aria-label="Ust"><i data-lucide="arrow-up"></i></button><button data-move="down" title="Alt" aria-label="Alt"><i data-lucide="arrow-down"></i></button><button data-move="right" title="Sag" aria-label="Sag"><i data-lucide="arrow-right"></i></button></div><hr><div class="detail"><span>Baglanti</span><strong>Internet · 443</strong></div><div class="detail"><span>Guvenlik</span><strong><i data-lucide="shield-check"></i>Uctan uca TLS</strong></div><div class="detail"><span>Dosya panosu</span><strong id="capability">Kontrol ediliyor</strong></div></aside>
+</div>
+<div class="file-band" id="dropzone"><div class="file-symbol"><i data-lucide="file-up"></i></div><div><h2>Dosyalar</h2><span id="file-state">Diger cihaza gonder</span></div><button id="choose-files" class="secondary"><i data-lucide="plus"></i>Dosya sec</button></div>
+<div class="latest"><span>SON AKTARIM</span><div id="last-transfer">Henuz aktarim yok</div><button id="open-folder" class="icon-button" title="Gelen dosyalar" aria-label="Gelen dosyalar"><i data-lucide="folder-open"></i></button></div>
+</section>
+<section id="transfers" class="view"><div class="section-heading"><div><span class="eyebrow">DOSYALAR</span><h1>Aktarim gecmisi</h1></div><button id="transfer-add" class="primary"><i data-lucide="plus"></i>Dosya sec</button></div><div id="transfer-list"></div></section>
+<section id="settings" class="view"><div class="section-heading"><div><span class="eyebrow">TERCIHLER</span><h1>Ayarlar</h1></div></div><div class="setting-row"><div><h2>Dosya kopyala / yapistir</h2><p id="clipboard-note">Kopyalanan dosyalar eslestirilmis cihaza gonderilir.</p></div><label class="switch"><input type="checkbox" id="clipboard-toggle" aria-label="Dosya kopyala yapistir"><span></span></label></div><div class="setting-row"><div><h2>Oturum acilinca baslat</h2><p>DeskBridge</p></div><label class="switch"><input type="checkbox" id="autostart-toggle" aria-label="Oturum acilinca baslat"><span></span></label></div><div class="setting-row"><div><h2>Motor</h2><p>Deskflow · Acik kaynak klavye ve mouse motoru</p></div><span class="tag">TLS etkin</span></div><div class="setting-row"><div><h2>Surum</h2><p>DeskBridge Desktop 0.3.0</p></div></div></section>
+</main>
+<footer><span><i data-lucide="lock-keyhole"></i>Ozel cihaz eslesmesi</span><span id="footer-status">Baglanti kontrol ediliyor</span></footer>
+<dialog id="pair-dialog"><form id="pair-form"><h2>Cihazini eslestir</h2><label class="field-label" for="pair-code">Ozel eslesme kodu</label><input id="pair-code" type="password" required minlength="64" maxlength="64" autocomplete="off"><label class="field-label" for="pair-side">Bu cihaz</label><select id="pair-side"><option value="a">Mac · Klavye ve mouse</option><option value="b">Linux · Diger ekran</option></select><button class="primary" type="submit">Baglan</button></form></dialog>
+<div id="toast" role="status" hidden></div>
+<script src="node_modules/lucide/dist/umd/lucide.js"></script><script src="renderer.js"></script>
+</body></html>

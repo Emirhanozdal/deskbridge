@@ -1,6 +1,12 @@
 # DeskBridge
 
-Personal Mac + Linux keyboard, mouse and file bridge, built in Go.
+One application for sharing a keyboard, mouse, clipboard files and ordinary
+files between macOS and Linux over an authenticated relay on port 443.
+
+DeskBridge is a monorepo. The native relay is in `cmd/deskbridge`, the desktop
+application is in `desktop`, the Worker relay is in `relay`, and the integrated
+Deskflow-derived input engine is in `engine/src`. Users install DeskBridge only;
+the separate Deskflow interface is not part of the packaged application.
 
 ## Connect
 
@@ -34,35 +40,26 @@ Received files go to Downloads, or the directory set with `connect --dir`.
 The same command works in either direction. Native desktop-to-desktop dragging
 is not implemented.
 
-## Keyboard and Mouse
+## Desktop Application
 
-Install Deskflow on both computers. Grant required OS input permissions and
-configure Deskflow certificates and trusted fingerprints. Then create the layout:
+The desktop interface pairs devices, places the peer around the main screen,
+sends files, records transfer history, and can mirror native file-copy clipboard
+events. Relay credentials stay in the main process and are never exposed to the
+renderer. macOS builds embed the relay and `deskbridge-input` engine inside one
+`DeskBridge.app` bundle.
 
-```bash
-deskbridge init
-deskbridge pair
-deskbridge deskflow-config --write
-deskbridge start-server --name YOUR_MAC_SCREEN_NAME
-```
-
-On Linux, while the relay is connected:
-
-```bash
-deskbridge start-client --name YOUR_LINUX_SCREEN_NAME --host 127.0.0.1:24801
-```
-
-The local port 24801 forwards to the peer's Deskflow port 24800. The file proxy
-on 47890 forwards only to the peer's internal upload server. Both listeners bind
-only to localhost. Modern Deskflow settings are generated separately from the
-screen layout. Start commands run in the foreground.
+The local port 24801 forwards to the peer's input port 24800. The file proxy on
+47890 forwards only to the peer's internal upload server. Both listeners bind
+only to localhost. The relay and input service restart automatically after a
+process failure when their per-user background services are enabled.
 
 ## Installation
 
 Requires Node.js 18+, curl and tar for npx; no Go compiler or sudo is needed.
 The launcher verifies native release checksums and caches the binaries.
 Supported packages: Apple Silicon macOS, x86_64 Linux. Windows is phase 2.
-The bare npm registry name is not published; use the GitHub npx command.
+The bare npm registry name is not published; use the GitHub npx command for the
+legacy terminal build. Packaged desktop releases do not require Node.js.
 
 Debian/Ubuntu package installation:
 
@@ -77,10 +74,17 @@ one Mac: authenticated inner TLS and byte-identical binary file uploads passed
 in both directions. Unauthenticated relay requests returned 401. Unit tests
 reject mismatched pairing secrets and invalid relay origins.
 
-Physical Mac-to-Linux keyboard/mouse sharing still requires testing on the
-Linux machine. Automatic background startup and native cross-desktop file
-dragging are not implemented. `doctor` reports local dependency detection,
-not proof of a connected or operational KVM.
+The current source contains native file clipboard transport, duplicate-safe
+atomic uploads, native outbound dragging, startup controls and graphical screen
+placement. Unit tests cover clipboard formats, layout preservation, engine
+discovery, upload safety and relay authentication. The integrated input engine
+has been compiled and packaged on Apple Silicon macOS.
+
+The integrated engine still needs a physical macOS-to-Linux interoperability
+run and macOS input-permission validation before it replaces the previously
+verified compatibility engine on an existing installation. Linux desktop
+packaging and Apple notarization are not complete. `doctor` reports local
+dependency detection, not proof of a connected or operational KVM.
 
 The legacy `tunnel` command uses cloudflared on 7844; it is no longer the default.
 That route timed out on the tested school network. `receive-local` explicitly
@@ -91,6 +95,9 @@ starts the local HTTP API; `--ui` optionally enables its browser upload form.
 ```bash
 make test build
 make release VERSION=0.2.0
+npm --prefix desktop install
+node scripts/build-input.cjs
+node scripts/package-macos.cjs
 ```
 
 Worker source and deployment config are in `relay/`. Deployment requires

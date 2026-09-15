@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -60,6 +61,7 @@ type cli struct {
 }
 
 type receiverOptions struct {
+	clipboardQueue string
 	dir            string
 	host           string
 	port           int
@@ -362,7 +364,7 @@ func (c *cli) cmdStartServer(args []string) error {
 		return errors.New("Deskflow server binary was not found in PATH")
 	}
 	commandArgs := []string{"--config", *config}
-	if filepath.Base(bin) == "deskflow-core" {
+	if isModernInputEngine(bin) {
 		settings, err := c.coreSettings("server", *name, *config, "", *dryRun)
 		if err != nil {
 			return err
@@ -411,7 +413,7 @@ func (c *cli) cmdStartClient(args []string) error {
 		return errors.New("Deskflow client binary was not found in PATH")
 	}
 	commandArgs := []string{targetHost}
-	if filepath.Base(bin) == "deskflow-core" {
+	if isModernInputEngine(bin) {
 		settings, err := c.coreSettings("client", *name, "", targetHost, *dryRun)
 		if err != nil {
 			return err
@@ -517,6 +519,7 @@ func serveReceiver(opts receiverOptions) error {
 
 func newReceiverServer(opts receiverOptions) *http.Server {
 	mux := http.NewServeMux()
+	registerClipboardReceiver(mux, opts)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -951,6 +954,11 @@ func firstBinary(names ...string) string {
 }
 
 func firstDeskflowBinary(kind string) string {
+	if kind == "server" || kind == "client" {
+		if input := firstExisting(os.Getenv("DESKBRIDGE_INPUT_BIN"), firstBinary("deskbridge-input")); input != "" {
+			return input
+		}
+	}
 	switch kind {
 	case "server":
 		return firstExisting(
@@ -976,6 +984,10 @@ func firstDeskflowBinary(kind string) string {
 	default:
 		return ""
 	}
+}
+
+func isModernInputEngine(bin string) bool {
+	return filepath.Base(bin) == "deskflow-core" || filepath.Base(bin) == "deskbridge-input"
 }
 
 func firstExisting(paths ...string) string {
@@ -1011,7 +1023,38 @@ func defaultDownloadDir() string {
 	if err != nil {
 		return "."
 	}
+	if runtime.GOOS == "linux" {
+		if config, err := os.UserConfigDir(); err == nil {
+			if data, err := os.ReadFile(filepath.Join(config, "user-dirs.dirs")); err == nil {
+				if dir := xdgDownloadDir(string(data), home); dir != "" {
+					return dir
+				}
+			}
+		}
+	}
 	return filepath.Join(home, "Downloads")
+}
+
+func xdgDownloadDir(config, home string) string {
+	for _, line := range strings.Split(config, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || key != "XDG_DOWNLOAD_DIR" {
+			continue
+		}
+		dir, err := strconv.Unquote(strings.TrimSpace(value))
+		if err != nil {
+			return ""
+		}
+		if dir == "$HOME" {
+			dir = home
+		} else if strings.HasPrefix(dir, "$HOME/") {
+			dir = filepath.Join(home, strings.TrimPrefix(dir, "$HOME/"))
+		}
+		if filepath.IsAbs(dir) && !strings.Contains(dir, "$") {
+			return filepath.Clean(dir)
+		}
+	}
+	return ""
 }
 
 func sendFile(path, endpoint, token string) error {
@@ -1057,38 +1100,21 @@ func saveUpload(r *http.Request, dir string) (string, error) {
 		return saveMultipartUpload(r, dir)
 	}
 	name := cleanUploadName(r.URL.Query().Get("name"))
-	target := filepath.Join(dir, name)
-	out, err := os.Create(target)
-	if err != nil {
-		return "", err
-	}
-	defer out.Close()
-	if _, err := io.Copy(out, r.Body); err != nil {
-		return "", err
-	}
-	return name, nil
+	return saveUniqueUpload(r.Body, dir, name)
 }
 
 func saveMultipartUpload(r *http.Request, dir string) (string, error) {
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
 		return "", err
 	}
+	defer r.MultipartForm.RemoveAll()
 	file, header, err := firstMultipartFile(r.MultipartForm)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
 	name := cleanUploadName(header.Filename)
-	target := filepath.Join(dir, name)
-	out, err := os.Create(target)
-	if err != nil {
-		return "", err
-	}
-	defer out.Close()
-	if _, err := io.Copy(out, file); err != nil {
-		return "", err
-	}
-	return name, nil
+	return saveUniqueUpload(file, dir, name)
 }
 
 func firstMultipartFile(form *multipart.Form) (multipart.File, *multipart.FileHeader, error) {

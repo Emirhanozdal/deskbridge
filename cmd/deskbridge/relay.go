@@ -203,7 +203,11 @@ func runRelay(ctx context.Context, cfg relaySettings, dir string) error {
 		return err
 	}
 	defer session.Close()
-	receiver := newReceiverServer(receiverOptions{dir: dir, token: cfg.Code, host: "127.0.0.1"})
+	configPath, err := relaySettingsPath()
+	if err != nil {
+		return err
+	}
+	receiver := newReceiverServer(receiverOptions{dir: dir, token: cfg.Code, host: "127.0.0.1", clipboardQueue: filepath.Join(filepath.Dir(configPath), "clipboard-inbox")})
 	incoming, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err

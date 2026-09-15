@@ -1,0 +1,7 @@
+{
+  "directory": "engine/src",
+  "importedRevision": "87bdbc7d765fe21ca7e244857d532900962821f3",
+  "upstream": "https://github.com/deskflow/deskflow",
+  "buildOption": "DESKBRIDGE_ENGINE_ONLY=ON",
+  "binary": "deskbridge-input"
+}
