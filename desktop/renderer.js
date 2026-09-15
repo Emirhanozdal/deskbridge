@@ -5,6 +5,21 @@ function icons(){lucide.createIcons();}
 function toast(message){$('toast').textContent=message;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,7000);}
 async function action(promise){const result=await promise;if(result?.error)toast(result.error);else if(result?.message)toast(result.message);return result;}
 function selectPosition(next){direction=next;dirty=true;$('apply').disabled=state?.side!=='a';renderBoard();}
+function renderHealth(){
+ const set=(id,txt)=>{const el=$(id);if(el)el.textContent=txt;};
+ set('h-status',state.connected?'Bagli':'Baglanti bekleniyor');
+ const lat=state.connected&&state.latency!=null?state.latency+' ms':'—';
+ set('h-latency',lat);
+ // color the health dot + latency by round-trip quality
+ let level='bad';
+ if(state.connected){level=state.latency==null?'warn':state.latency<60?'good':state.latency<160?'warn':'bad';}
+ const dot=$('h-dot');if(dot)dot.className='h-dot '+level;
+ const latEl=$('h-latency');if(latEl)latEl.className='health-value '+(state.connected?level:'');
+ set('h-role',state.side==='a'?'Mac · klavye/mouse':state.side==='b'?'Linux · ekran':'—');
+ set('h-engine',state.engineRunning?'Calisiyor':(state.connected?'Yonetiliyor':'Bekleniyor'));
+ set('h-relay',state.managed?'Yonetiliyor':(state.connected?'Aktif':'Yok'));
+ const ver=$('app-version');if(ver&&state.version)ver.textContent='DeskBridge Desktop '+state.version;
+}
 function renderBoard(){
  const positions={left:'2 / 1',right:'2 / 3',up:'1 / 2',down:'3 / 2'};
  $('peer-device').style.gridArea=positions[direction]||positions.right;
@@ -16,6 +31,7 @@ function render(next){state=next;if(!dirty){direction=state.layout.direction;pee
  $('footer-status').textContent=state.connected?'Sifreli aktarim etkin':'Diger cihaz bekleniyor';
  $('local-name').textContent=state.layout.local;$('peer-name').textContent=peer;$('peer-status').textContent=state.connected?'BAGLI':'CEVRIMDISI';
  $('capability').textContent=state.clipboardSupported?'Hazir':state.connected?'Guncelleme gerekli':'Bekleniyor';
+ renderHealth();
  const names=[...new Set([...state.layout.screens.filter(n=>n!==state.layout.local),peer])];
  if(JSON.stringify([...$('peer-select').options].map(o=>o.value))!==JSON.stringify(names))$('peer-select').replaceChildren(...names.map(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;return o;}));
  $('peer-select').value=peer;
