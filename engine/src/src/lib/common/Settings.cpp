@@ -96,7 +96,8 @@ Settings::Settings(QObject *parent) : QObject(parent), m_settingsWatcher{new QFi
   const auto xdgStateHome = qEnvironmentVariable("XDG_STATE_HOME");
   const auto stateBase = !xdgStateHome.isEmpty()
                              ? xdgStateHome
-                             : QStandardPaths::standardLocations(QStandardPaths::GenericStateLocation).at(0);
+                             : QStringLiteral("%1/.local/state")
+                                   .arg(QStandardPaths::writableLocation(QStandardPaths::HomeLocation));
   const auto stateFile = QStringLiteral("%1/%2.state").arg(stateBase, kAppName);
 
   m_stateSettings = new QSettings(stateFile, QSettings::IniFormat, this);
@@ -170,9 +171,9 @@ QString Settings::cleanComputerName(const QString &name)
   cleanName.replace(space, underscore);
   cleanName.replace(nameRegex, {});
   while (cleanName.startsWith(hyphen) || cleanName.startsWith(underscore) || cleanName.startsWith(period))
-    cleanName.removeFirst();
+    cleanName.remove(0, 1);
   while (cleanName.endsWith(hyphen) || cleanName.endsWith(underscore) || cleanName.endsWith(period))
-    cleanName.removeLast();
+    cleanName.chop(1);
   if (cleanName.length() > 255) {
     cleanName.truncate(255);
     cleanName = cleanComputerName(cleanName);

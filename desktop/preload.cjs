@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('deskbridge', {
   connect: () => ipcRenderer.invoke('connect'),
   pair: input => ipcRenderer.invoke('pair', input),
   generatePairing: () => ipcRenderer.invoke('generate-pairing'),
+  openRelaySetup: () => ipcRenderer.invoke('open-relay-setup'),
   copyText: value => ipcRenderer.invoke('copy-text', value),
   showFile: id => ipcRenderer.invoke('show-file', id),
   copyFiles: id => ipcRenderer.invoke('copy-files', id),

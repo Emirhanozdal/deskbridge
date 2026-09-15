@@ -3,7 +3,7 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === '/health') return Response.json({ service: 'deskbridge-relay', protocol: 2 });
     if (!/^\/connect\/(a|b)$/.test(url.pathname)) return new Response('Not found', { status: 404 });
-    const room = roomFromAuth(request.headers.get('Authorization'));
+    const room = authorizedRoom(request.headers.get('Authorization'), env);
     if (!room) return new Response('Unauthorized', { status: 401 });
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return new Response('WebSocket required', { status: 426 });
     return env.PAIR.get(env.PAIR.idFromName(room)).fetch(request);
@@ -13,6 +13,13 @@ export default {
 export function roomFromAuth(header) {
   const match = /^Bearer ([a-f0-9]{64})$/.exec(header || '');
   return match?.[1] || '';
+}
+
+export function authorizedRoom(header, env = {}) {
+  const room = roomFromAuth(header);
+  if (!room) return '';
+  if (env.PUBLIC_ROOMS === 'true') return room;
+  return typeof env.AUTH_HASH === 'string' && room === env.AUTH_HASH ? room : '';
 }
 
 export class Pair {

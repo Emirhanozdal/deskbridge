@@ -3,7 +3,6 @@
   "main": "worker.mjs",
   "compatibility_date": "2026-09-14",
   "workers_dev": true,
-  "vars": { "PUBLIC_ROOMS": "true" },
   "durable_objects": { "bindings": [{ "name": "PAIR", "class_name": "Pair" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Pair"] }],
   "observability": { "enabled": false }

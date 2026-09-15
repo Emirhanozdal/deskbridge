@@ -21,3 +21,8 @@ dialog > form > .primary {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
 }
+
+.relay-setup {
+  width: 100%;
+  margin-top: 10px;
+}

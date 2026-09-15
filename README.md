@@ -19,10 +19,17 @@ code on both devices. Settings are saved in the OS user configuration directory
 with mode 0600. Subsequent launches need only `deskbridge`, or the npx command.
 Keep the process running on each machine.
 
-The hosted relay supports isolated private rooms. Each application generates a
-random 256-bit pairing code and sends only its domain-separated SHA-256 hash as
-the room identifier. The same code is entered on the second device. No Cloudflare
-account, Worker deployment or terminal configuration is required by users.
+Each installation uses a relay in the owner's Cloudflare account so traffic and
+quotas are not shared with the project account. Use the Deploy to Cloudflare
+button below, accept the prompted Worker and Durable Object setup, then enter the
+resulting `https://...workers.dev` address and the same random pairing code on
+both devices.
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Emirhanozdal/deskbridge/tree/main/relay)
+
+The application sends only a domain-separated SHA-256 hash of the 256-bit code
+to the relay as its room identifier. The private code itself stays on the paired
+devices.
 
 Connections use WebSocket TLS over port 443, with a second mutually authenticated
 TLS 1.3 connection inside it. The private code derives the inner certificate;
@@ -106,11 +113,12 @@ node scripts/build-input.cjs
 node scripts/package-macos.cjs
 ```
 
-Worker source and deployment config are in `relay/`. Deployment requires
-Cloudflare authorization. No pairing secret belongs in source control. A
-Workers/SQLite Durable Object hosts each WebSocket pair and does not store file
-contents. The Worker URL is intentionally public; Cloudflare account credentials
-and API tokens are not stored in this repository.
+Worker source and deployment config are isolated in `relay/` for Cloudflare's
+deploy flow. Deployment requires Cloudflare authorization but no API token is
+stored by DeskBridge. A Workers/SQLite Durable Object hosts each WebSocket pair,
+uses the Hibernation API while idle, and does not store file contents. The
+project owner's live relay is allowlisted to the development device pair; public
+users deploy the same source into their own account.
 
 Live relay test (requires the owner's private code file):
 

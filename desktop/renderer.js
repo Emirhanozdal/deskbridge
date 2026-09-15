@@ -46,8 +46,9 @@ $('choose-files').onclick=$('transfer-add').onclick=()=>action(api.chooseFiles()
 $('open-folder').onclick=()=>action(api.folder());$('reconnect').onclick=()=>action(api.connect());
 $('clipboard-toggle').onchange=e=>action(api.configure({clipboard:e.target.checked}));$('autostart-toggle').onchange=e=>action(api.configure({autoStart:e.target.checked}));
 $('generate-code').onclick=async()=>{$('pair-code').value=(await api.generatePairing()).code;};
+$('relay-setup').onclick=()=>action(api.openRelaySetup());
 $('copy-code').onclick=()=>action(api.copyText($('pair-code').value)).then(result=>{if(!result?.error)toast('Eslesme kodu kopyalandi');});
-$('pair-form').onsubmit=async e=>{e.preventDefault();const result=await action(api.pair({code:$('pair-code').value,side:$('pair-side').value}));if(!result?.error){$('pair-dialog').close();$('pair-code').value='';}};
+$('pair-form').onsubmit=async e=>{e.preventDefault();const result=await action(api.pair({url:$('relay-url').value,code:$('pair-code').value,side:$('pair-side').value}));if(!result?.error){$('pair-dialog').close();$('pair-code').value='';}};
 document.addEventListener('dragover',e=>{if(e.dataTransfer.types.includes('Files')){e.preventDefault();$('dropzone').classList.add('drag-over');}});
 document.addEventListener('drop',e=>{if(e.dataTransfer.files.length){e.preventDefault();$('dropzone').classList.remove('drag-over');action(api.sendDrop([...e.dataTransfer.files]));}});
 document.addEventListener('dragleave',e=>{if(!e.relatedTarget)$('dropzone').classList.remove('drag-over');});

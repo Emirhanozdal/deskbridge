@@ -22,6 +22,8 @@ const relayFile = path.join(configDir,'relay.json');
 const prefsFile = path.join(configDir,'desktop.json');
 const inbox = path.join(configDir,'clipboard-inbox');
 const historyFile = path.join(configDir,'history.json');
+const defaultRelay = 'https://deskbridge-relay.emirhanozdall.workers.dev';
+const deployRelay = 'https://deploy.workers.cloudflare.com/?url=https://github.com/Emirhanozdal/deskbridge/tree/main/relay';
 const deskflowDir = process.platform === 'darwin' ? path.join(os.homedir(),'Library','Deskflow') : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(),'.config'),'Deskflow');
 const settingsFile = path.join(deskflowDir,'Deskflow.conf');
 const layoutFile = path.join(deskflowDir,'deskflow-server.conf');
@@ -178,7 +180,8 @@ function handlers(){
   handle('apply-layout',applyLayout);handle('connect',()=>{startRelay();return {ok:true};});
   handle('generate-pairing',()=>({code:randomBytes(32).toString('hex')}));
   handle('copy-text',value=>{if(typeof value!=='string'||value.length>256)throw Error('Gecersiz metin');clipboard.writeText(value);return {ok:true};});
-  handle('pair',data=>{const code=String(data.code).trim().toLowerCase();if(!/^[a-f0-9]{64}$/.test(code)||!['a','b'].includes(data.side))throw Error('Eslesme kodu veya cihaz rolu gecersiz');saveJSON(relayFile,{url:'https://deskbridge-relay.emirhanozdall.workers.dev',code,side:data.side});startRelay();return {ok:true};});
+  handle('open-relay-setup',()=>shell.openExternal(deployRelay));
+  handle('pair',data=>{const code=String(data.code).trim().toLowerCase();const url=String(data.url||defaultRelay).trim().replace(/\/$/,'');let parsed;try{parsed=new URL(url);}catch{}if(!/^[a-f0-9]{64}$/.test(code)||!['a','b'].includes(data.side))throw Error('Eslesme kodu veya cihaz rolu gecersiz');if(!parsed||parsed.protocol!=='https:'||parsed.username||parsed.password||parsed.search||parsed.hash||(parsed.pathname&&parsed.pathname!=='/'))throw Error('Relay adresi gecerli bir HTTPS adresi olmali');saveJSON(relayFile,{url,code,side:data.side});startRelay();return {ok:true};});
   handle('show-file',id=>{const item=transfers.find(t=>t.id===id);if(item)shell.showItemInFolder(item.paths[0]);});
   handle('copy-files',async id=>{const item=transfers.find(t=>t.id===id);if(item)await copyLocalFiles(item.paths);});
   handle('folder',()=>shell.openPath(app.getPath('downloads')));

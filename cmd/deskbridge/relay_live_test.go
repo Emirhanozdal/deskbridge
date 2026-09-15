@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -28,6 +29,13 @@ func TestLiveRelayFileTransfer(t *testing.T) {
 		t.Fatal(err)
 	}
 	code := strings.TrimSpace(string(secret))
+	if strings.HasPrefix(code, "{") {
+		var cfg relaySettings
+		if err := json.Unmarshal(secret, &cfg); err != nil {
+			t.Fatal(err)
+		}
+		code = cfg.Code
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	connections := make([]*websocket.Conn, 2)
