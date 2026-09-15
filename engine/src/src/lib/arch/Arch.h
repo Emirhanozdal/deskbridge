@@ -5,7 +5,7 @@
  * SPDX-FileCopyrightText: (C) 2002 Chris Schoeneman
  * SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
  */
-#include <QtSystemDetection>
+#include <QtCore/qsystemdetection.h>
 // Consider whether or not to use either encapsulation (as below)
 // or inheritance (as it is now) for the ARCH stuff.
 //
