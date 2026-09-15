@@ -4,7 +4,9 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app="$root/work/dist/DeskBridge-linux-x64"
 stage="$root/work/linux-package"
-output="$root/outputs/deskbridge_0.3.2_amd64.deb"
+# single source of truth for the package version
+version="$(awk '/^Version:/{print $2; exit}' "$root/packaging/linux/control")"
+output="$root/outputs/deskbridge_${version}_amd64.deb"
 test -x "$app/DeskBridge"
 test -x "$app/resources/deskbridge"
 test -x "$app/resources/deskbridge-input"

@@ -35,7 +35,7 @@ function binary() {
   const locations=[path.join(process.resourcesPath,'deskbridge'), path.join(__dirname,'..','build','deskbridge')];
   return locations.find(p=>fs.existsSync(p)) || 'deskbridge';
 }
-function snapshot() { const cfg=relayConfig(); return { connected, clipboardSupported, error, layout, preferences, transfers:transfers.slice(0,60), paired:!!cfg.code, side:cfg.side, managed:!!relayProcess, version:'0.3.2' }; }
+function snapshot() { const cfg=relayConfig(); return { connected, clipboardSupported, error, layout, preferences, transfers:transfers.slice(0,60), paired:!!cfg.code, side:cfg.side, managed:!!relayProcess, version:'0.3.3' }; }
 function emit() { if(win && !win.isDestroyed()) win.webContents.send('changed',snapshot()); }
 function record(item) { transfers.unshift({id:randomUUID(),time:Date.now(),...item}); transfers=transfers.slice(0,200); saveJSON(historyFile,transfers); emit(); return transfers[0]; }
 function request(endpoint, method='GET', body) {
