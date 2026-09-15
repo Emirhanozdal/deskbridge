@@ -35,7 +35,7 @@ function binary() {
   const locations=[path.join(process.resourcesPath,'deskbridge'), path.join(__dirname,'..','build','deskbridge')];
   return locations.find(p=>fs.existsSync(p)) || 'deskbridge';
 }
-function snapshot() { const cfg=relayConfig(); return { connected, clipboardSupported, error, layout, preferences, transfers:transfers.slice(0,60), paired:!!cfg.code, side:cfg.side, managed:!!relayProcess, version:'0.3.1' }; }
+function snapshot() { const cfg=relayConfig(); return { connected, clipboardSupported, error, layout, preferences, transfers:transfers.slice(0,60), paired:!!cfg.code, side:cfg.side, managed:!!relayProcess, version:'0.3.2' }; }
 function emit() { if(win && !win.isDestroyed()) win.webContents.send('changed',snapshot()); }
 function record(item) { transfers.unshift({id:randomUUID(),time:Date.now(),...item}); transfers=transfers.slice(0,200); saveJSON(historyFile,transfers); emit(); return transfers[0]; }
 function request(endpoint, method='GET', body) {
@@ -187,10 +187,11 @@ function handlers(){
   handle('folder',()=>shell.openPath(app.getPath('downloads')));
   ipcMain.on('start-drag',(event,id)=>{const item=transfers.find(t=>t.id===id);if(event.sender===win?.webContents&&item&&fs.existsSync(item.paths[0]))event.sender.startDrag({file:item.paths[0],icon:nativeImage.createFromPath(path.join(__dirname,'icon.png'))});});
 }
-function showWindow(){if(win){win.show();return;}win=new BrowserWindow({width:1060,height:740,minWidth:760,minHeight:600,title:'DeskBridge',backgroundColor:'#f5f7f8',webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true}});win.loadFile(path.join(__dirname,'index.html'));win.webContents.setWindowOpenHandler(()=>({action:'deny'}));win.webContents.on('will-navigate',e=>e.preventDefault());win.on('close',e=>{if(!closing){e.preventDefault();win.hide();}});}
+function showWindow(){if(win){win.show();return;}win=new BrowserWindow({width:1060,height:740,minWidth:760,minHeight:600,title:'DeskBridge',icon:path.join(__dirname,'icon.png'),backgroundColor:'#f5f7f8',webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true}});win.loadFile(path.join(__dirname,'index.html'));win.webContents.setWindowOpenHandler(()=>({action:'deny'}));win.webContents.on('will-navigate',e=>e.preventDefault());win.on('close',e=>{if(!closing){e.preventDefault();win.hide();}});}
 app.on('second-instance',showWindow);app.on('activate',showWindow);
 app.on('before-quit',()=>{closing=true;clearTimeout(coreRestartTimer);relayProcess?.kill();coreProcess?.kill();});
 app.whenReady().then(async()=>{
+  if(process.platform==='darwin')app.dock.setIcon(path.join(__dirname,'icon.png'));
   preferences={...preferences,...readJSON(prefsFile,{})};transfers=readJSON(historyFile,[]);readCurrentLayout();handlers();
   Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'DeskBridge',submenu:[{label:'DeskBridge',click:showWindow},{type:'separator'},{role:'quit'}]},{role:'editMenu'},{role:'windowMenu'}]));
   showWindow();
