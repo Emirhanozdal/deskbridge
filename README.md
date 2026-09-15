@@ -19,14 +19,15 @@ code on both devices. Settings are saved in the OS user configuration directory
 with mode 0600. Subsequent launches need only `deskbridge`, or the npx command.
 Keep the process running on each machine.
 
-The personal relay is authenticated; public repository access does not grant
-access to it. The owner provisions a random 256-bit pairing code and stores only
-its domain-separated SHA-256 authentication hash as the Worker AUTH_HASH secret.
+The hosted relay supports isolated private rooms. Each application generates a
+random 256-bit pairing code and sends only its domain-separated SHA-256 hash as
+the room identifier. The same code is entered on the second device. No Cloudflare
+account, Worker deployment or terminal configuration is required by users.
 
 Connections use WebSocket TLS over port 443, with a second mutually authenticated
 TLS 1.3 connection inside it. The private code derives the inner certificate;
 the relay cannot derive that key from its authentication hash. Do not publish
-the pairing code. The service supports one pair at a time.
+the pairing code. Each room supports one paired device on each side.
 
 ## Files
 
@@ -37,8 +38,9 @@ deskbridge send-peer ./file.zip
 ```
 
 Received files go to Downloads, or the directory set with `connect --dir`.
-The same command works in either direction. Native desktop-to-desktop dragging
-is not implemented.
+The same command works in either direction. The desktop application accepts
+files dropped onto its transfer area and exposes received files as native drag
+sources. File copy/paste transport can be enabled in Settings.
 
 ## Desktop Application
 
@@ -105,11 +107,10 @@ node scripts/package-macos.cjs
 ```
 
 Worker source and deployment config are in `relay/`. Deployment requires
-Cloudflare authorization. AUTH_HASH must be configured separately; no pairing
-secret belongs in source control. A Workers/SQLite Durable Object hosts the
-WebSocket pair and does not store file contents. The Worker URL is intentionally
-public; Cloudflare account credentials, API tokens and the authentication hash
-are not stored in this repository.
+Cloudflare authorization. No pairing secret belongs in source control. A
+Workers/SQLite Durable Object hosts each WebSocket pair and does not store file
+contents. The Worker URL is intentionally public; Cloudflare account credentials
+and API tokens are not stored in this repository.
 
 Live relay test (requires the owner's private code file):
 

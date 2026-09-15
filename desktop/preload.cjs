@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('deskbridge', {
   applyLayout: layout => ipcRenderer.invoke('apply-layout', layout),
   connect: () => ipcRenderer.invoke('connect'),
   pair: input => ipcRenderer.invoke('pair', input),
+  generatePairing: () => ipcRenderer.invoke('generate-pairing'),
+  copyText: value => ipcRenderer.invoke('copy-text', value),
   showFile: id => ipcRenderer.invoke('show-file', id),
   copyFiles: id => ipcRenderer.invoke('copy-files', id),
   folder: () => ipcRenderer.invoke('folder'),

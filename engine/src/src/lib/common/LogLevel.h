@@ -44,10 +44,11 @@ public:
 
   static LogLevel::Level fromOption(const QString &level)
   {
-    const auto index = m_levelOptions.indexOf(level, 0, Qt::CaseInsensitive);
-    if (index < 0 || index >= m_levelOptions.count())
-      return LogLevel::Level::Info;
-    return LogLevel::Level(index);
+    for (qsizetype index = 0; index < m_levelOptions.count(); ++index) {
+      if (m_levelOptions.at(index).compare(level, Qt::CaseInsensitive) == 0)
+        return LogLevel::Level(index);
+    }
+    return LogLevel::Level::Info;
   }
 
   static QString toString(const LogLevel::Level &level)

@@ -33,7 +33,7 @@ function render(next){state=next;if(!dirty){direction=state.layout.direction;pee
   const status=document.createElement('span');status.className='transfer-status'+(item.status==='error'?' failed':'');status.textContent=item.status==='sending'?item.progress+'%':item.status==='error'?'Basarisiz':'Tamamlandi';status.title=item.error||'';row.append(status);
   for(const [symbol,title,handler] of [['copy','Dosyayi kopyala',()=>action(api.copyFiles(item.id))],['folder-open','Klasorde goster',()=>action(api.showFile(item.id))]]){const b=document.createElement('button');b.className='icon-button';b.title=title;b.setAttribute('aria-label',title);const i=document.createElement('i');i.dataset.lucide=symbol;b.append(i);b.onclick=handler;b.disabled=item.status!=='done';row.append(b);}list.append(row);
  }
- if(!state.paired&&!$('pair-dialog').open)$('pair-dialog').showModal();
+ if(!state.paired&&!$('pair-dialog').open){api.generatePairing().then(result=>{$('pair-code').value=result.code;$('pair-dialog').showModal();});}
  renderBoard();icons();
 }
 document.querySelectorAll('.tab').forEach(tab=>tab.onclick=()=>{document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t===tab));document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id===tab.dataset.view));});
@@ -45,6 +45,8 @@ $('apply').onclick=async()=>{const result=await action(api.applyLayout({peer,dir
 $('choose-files').onclick=$('transfer-add').onclick=()=>action(api.chooseFiles());
 $('open-folder').onclick=()=>action(api.folder());$('reconnect').onclick=()=>action(api.connect());
 $('clipboard-toggle').onchange=e=>action(api.configure({clipboard:e.target.checked}));$('autostart-toggle').onchange=e=>action(api.configure({autoStart:e.target.checked}));
+$('generate-code').onclick=async()=>{$('pair-code').value=(await api.generatePairing()).code;};
+$('copy-code').onclick=()=>action(api.copyText($('pair-code').value)).then(result=>{if(!result?.error)toast('Eslesme kodu kopyalandi');});
 $('pair-form').onsubmit=async e=>{e.preventDefault();const result=await action(api.pair({code:$('pair-code').value,side:$('pair-side').value}));if(!result?.error){$('pair-dialog').close();$('pair-code').value='';}};
 document.addEventListener('dragover',e=>{if(e.dataTransfer.types.includes('Files')){e.preventDefault();$('dropzone').classList.add('drag-over');}});
 document.addEventListener('drop',e=>{if(e.dataTransfer.files.length){e.preventDefault();$('dropzone').classList.remove('drag-over');action(api.sendDrop([...e.dataTransfer.files]));}});

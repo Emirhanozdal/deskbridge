@@ -6,7 +6,7 @@ const path = require('node:path');
 const http = require('node:http');
 const net = require('node:net');
 const { spawn, execFileSync } = require('node:child_process');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, randomBytes } = require('node:crypto');
 const { readLayout, changeLayout } = require('./layout.cjs');
 const { readFiles, fileItem } = require('./clipboard.cjs');
 const { resolveEngine } = require('./engine.cjs');
@@ -176,6 +176,8 @@ function handlers(){
     saveJSON(prefsFile,preferences);emit();return {ok:true};
   });
   handle('apply-layout',applyLayout);handle('connect',()=>{startRelay();return {ok:true};});
+  handle('generate-pairing',()=>({code:randomBytes(32).toString('hex')}));
+  handle('copy-text',value=>{if(typeof value!=='string'||value.length>256)throw Error('Gecersiz metin');clipboard.writeText(value);return {ok:true};});
   handle('pair',data=>{const code=String(data.code).trim().toLowerCase();if(!/^[a-f0-9]{64}$/.test(code)||!['a','b'].includes(data.side))throw Error('Eslesme kodu veya cihaz rolu gecersiz');saveJSON(relayFile,{url:'https://deskbridge-relay.emirhanozdall.workers.dev',code,side:data.side});startRelay();return {ok:true};});
   handle('show-file',id=>{const item=transfers.find(t=>t.id===id);if(item)shell.showItemInFolder(item.paths[0]);});
   handle('copy-files',async id=>{const item=transfers.find(t=>t.id===id);if(item)await copyLocalFiles(item.paths);});
