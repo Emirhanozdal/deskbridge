@@ -70,10 +70,16 @@ Supported packages: Apple Silicon macOS, x86_64 Linux. Windows is phase 2.
 The bare npm registry name is not published; use the GitHub npx command for the
 legacy terminal build. Packaged desktop releases do not require Node.js.
 
-Linux Mint/Debian/Ubuntu desktop installation:
+Linux Mint/Debian/Ubuntu: register the signed APT repository once:
 
 ```bash
-curl -fL --retry 5 https://emirhanozdal.github.io/deskbridge/i -o /tmp/db.sh && bash /tmp/db.sh
+curl -fsSL https://emirhanozdal.github.io/deskbridge/a | sudo sh
+```
+
+Install and update with APT from then on:
+
+```bash
+sudo apt install deskbridge
 ```
 
 The desktop package contains the relay and input engine. Do not install or open

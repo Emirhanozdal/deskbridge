@@ -35,7 +35,7 @@ function binary() {
   const locations=[path.join(process.resourcesPath,'deskbridge'), path.join(__dirname,'..','build','deskbridge')];
   return locations.find(p=>fs.existsSync(p)) || 'deskbridge';
 }
-function snapshot() { const cfg=relayConfig(); return { connected, clipboardSupported, error, layout, preferences, transfers:transfers.slice(0,60), paired:!!cfg.code, side:cfg.side, managed:!!relayProcess, version:'0.3.0' }; }
+function snapshot() { const cfg=relayConfig(); return { connected, clipboardSupported, error, layout, preferences, transfers:transfers.slice(0,60), paired:!!cfg.code, side:cfg.side, managed:!!relayProcess, version:'0.3.1' }; }
 function emit() { if(win && !win.isDestroyed()) win.webContents.send('changed',snapshot()); }
 function record(item) { transfers.unshift({id:randomUUID(),time:Date.now(),...item}); transfers=transfers.slice(0,200); saveJSON(historyFile,transfers); emit(); return transfers[0]; }
 function request(endpoint, method='GET', body) {
@@ -61,7 +61,7 @@ async function sendFile(file, item) {
 async function sendFiles(files, asClipboard=false) {
   if(!connected)throw Error('Diger cihaz bagli degil');
   if(!Array.isArray(files)||!files.length||files.length>100)throw Error('Gecersiz dosya secimi');
-  if(asClipboard&&!clipboardSupported)throw Error('Dosya panosu icin diger cihazda DeskBridge 0.3.0 gerekli');
+  if(asClipboard&&!clipboardSupported)throw Error('Dosya panosu icin diger cihazda DeskBridge 0.3.0 veya ustu gerekli');
   const saved=[];
   for(const file of files){
     if(typeof file!=='string'||!path.isAbsolute(file))throw Error('Gecersiz dosya yolu');

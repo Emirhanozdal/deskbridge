@@ -6,24 +6,8 @@ if [ "$(uname -s)" != Linux ] || [ "$(uname -m)" != x86_64 ]; then
   exit 1
 fi
 command -v apt >/dev/null || { echo 'apt is required.' >&2; exit 1; }
-tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
-download() {
-  local label="$1" url="$2" target="$3"
-  echo "Downloading $label..."
-  if ! curl -fL --retry 5 --retry-delay 2 --connect-timeout 15 --max-time 300 "$url" -o "$target"; then
-    echo "Could not download $label. Installation stopped; retry this installer." >&2
-    return 1
-  fi
-}
-base=https://github.com/Emirhanozdal/deskbridge/releases/download/v0.3.0
-package="$tmpdir/deskbridge-desktop_0.3.0_amd64.deb"
-download DeskBridge "$base/deskbridge-desktop_0.3.0_amd64.deb" "$package"
-download checksum "$base/deskbridge-desktop_0.3.0_amd64.deb.sha256" "$package.sha256"
-expected="$(cut -d ' ' -f 1 "$package.sha256")"
-actual="$(sha256sum "$package" | cut -d ' ' -f 1)"
-[ "$expected" = "$actual" ] || { echo 'Checksum verification failed.' >&2; exit 1; }
-sudo apt install -y "$package"
+curl -fsSL https://emirhanozdal.github.io/deskbridge/a | sudo sh
+sudo apt install -y deskbridge
 systemctl --user disable --now deskbridge.service >/dev/null 2>&1 || true
 mkdir -p "$HOME/.config/autostart"
 cp /usr/share/applications/deskbridge.desktop "$HOME/.config/autostart/deskbridge.desktop"

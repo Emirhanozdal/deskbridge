@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+set -eu
+
+test "$(id -u)" -eq 0 || { echo 'Run with: curl -fsSL https://emirhanozdal.github.io/deskbridge/a | sudo sh' >&2; exit 1; }
+curl -fsSL https://emirhanozdal.github.io/deskbridge/deskbridge-archive-keyring.asc \
+  -o /usr/share/keyrings/deskbridge-archive-keyring.asc
+printf '%s\n' 'deb [arch=amd64 signed-by=/usr/share/keyrings/deskbridge-archive-keyring.asc] https://github.com/Emirhanozdal/deskbridge/releases/download/apt ./' \
+  > /etc/apt/sources.list.d/deskbridge.list
+apt-get update
+echo 'DeskBridge APT repository is ready. Run: sudo apt install deskbridge'

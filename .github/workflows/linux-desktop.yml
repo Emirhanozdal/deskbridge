@@ -25,7 +25,7 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build qt6-base-dev qt6-tools-dev \
+          sudo apt-get install -y apt-utils dpkg-dev gnupg cmake ninja-build qt6-base-dev qt6-tools-dev \
             xorg-dev libx11-dev libxtst-dev libssl-dev libxkbfile-dev \
             libxkbregistry-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libei-dev libportal-dev libxinerama-dev libxrandr-dev
@@ -45,7 +45,7 @@ jobs:
         run: |
           node desktop/node_modules/@electron/packager/bin/electron-packager.mjs \
             desktop DeskBridge --platform=linux --arch=x64 --out=work/dist \
-            --overwrite --asar --app-version=0.3.0 --build-version=0.3.0 \
+            --overwrite --asar --app-version=0.3.1 --build-version=0.3.1 \
             --extra-resource=build/deskbridge \
             --extra-resource=work/linux-engine/bin/deskbridge-input
           bash scripts/package-linux.sh
@@ -53,14 +53,37 @@ jobs:
         with:
           name: deskbridge-linux-amd64
           path: |
-            outputs/deskbridge-desktop_0.3.0_amd64.deb
-            outputs/deskbridge-desktop_0.3.0_amd64.deb.sha256
+            outputs/deskbridge_0.3.1_amd64.deb
+            outputs/deskbridge_0.3.1_amd64.deb.sha256
       - name: Publish release assets
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" --title "DeskBridge 0.3.0" \
+          gh release create "${GITHUB_REF_NAME}" --title "DeskBridge 0.3.1" \
             --notes "Single-app Linux build with the integrated DeskBridge input engine." \
-            outputs/deskbridge-desktop_0.3.0_amd64.deb \
-            outputs/deskbridge-desktop_0.3.0_amd64.deb.sha256
+            outputs/deskbridge_0.3.1_amd64.deb \
+            outputs/deskbridge_0.3.1_amd64.deb.sha256
+      - name: Publish signed APT repository
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          mkdir apt-repo
+          cp outputs/deskbridge_0.3.1_amd64.deb apt-repo/
+          cd apt-repo
+          dpkg-scanpackages . /dev/null > Packages
+          gzip -9k Packages
+          apt-ftparchive release . > Release
+          printf '%s' "$APT_GPG_PRIVATE_KEY" | base64 -d | gpg --batch --import
+          gpg --batch --yes --default-key 32B992FE9A8F78B495AB0BB633F469D39141034C --clearsign -o InRelease Release
+          gpg --batch --yes --default-key 32B992FE9A8F78B495AB0BB633F469D39141034C -abs -o Release.gpg Release
+          cd ..
+          if gh release view apt >/dev/null 2>&1; then
+            gh release upload apt apt-repo/* --clobber
+          else
+            gh release create apt --target "$GITHUB_SHA" --title "DeskBridge APT Repository" \
+              --notes "Machine-readable signed APT repository."
+            gh release upload apt apt-repo/* --clobber
+          fi

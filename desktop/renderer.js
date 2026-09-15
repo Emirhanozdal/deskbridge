@@ -20,7 +20,7 @@ function render(next){state=next;if(!dirty){direction=state.layout.direction;pee
  if(JSON.stringify([...$('peer-select').options].map(o=>o.value))!==JSON.stringify(names))$('peer-select').replaceChildren(...names.map(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;return o;}));
  $('peer-select').value=peer;
  $('clipboard-toggle').checked=state.preferences.clipboard;$('autostart-toggle').checked=state.preferences.autoStart;
- $('clipboard-note').textContent=state.clipboardSupported?'Kopyalanan dosyalar eslestirilmis cihaza gonderilir.':'Karsi cihazda DeskBridge Desktop 0.3.0 gerekli.';
+ $('clipboard-note').textContent=state.clipboardSupported?'Kopyalanan dosyalar eslestirilmis cihaza gonderilir.':'Karsi cihazda DeskBridge Desktop 0.3.0 veya ustu gerekli.';
  $('choose-files').disabled=!state.connected;$('transfer-add').disabled=!state.connected;
  $('file-state').textContent=state.connected?'Bagli cihaza gonder':'Cihaz baglantisi bekleniyor';
  $('count').textContent=state.transfers.length;$('last-transfer').textContent=state.transfers[0]?.name||'Henuz aktarim yok';
