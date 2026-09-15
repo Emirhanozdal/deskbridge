@@ -103,7 +103,9 @@ node scripts/package-macos.cjs
 Worker source and deployment config are in `relay/`. Deployment requires
 Cloudflare authorization. AUTH_HASH must be configured separately; no pairing
 secret belongs in source control. A Workers/SQLite Durable Object hosts the
-WebSocket pair and does not store file contents.
+WebSocket pair and does not store file contents. The Worker URL is intentionally
+public; Cloudflare account credentials, API tokens and the authentication hash
+are not stored in this repository.
 
 Live relay test (requires the owner's private code file):
 
