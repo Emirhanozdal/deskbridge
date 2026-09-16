@@ -2,6 +2,8 @@
   "name": "deskbridge-desktop",
   "productName": "DeskBridge",
   "version": "0.3.7",
+  "description": "DeskBridge desktop app — cross-screen keyboard, mouse, clipboard, file drag-drop and remote screen over a private relay.",
+  "author": "DeskBridge",
   "private": true,
   "main": "main.cjs",
   "scripts": {
@@ -9,12 +11,12 @@
     "test": "node --test tests/*.test.cjs"
   },
   "dependencies": {
-    "electron": "44.3.0",
     "lucide": "0.468.0",
     "plist": "3.1.0"
   },
   "devDependencies": {
-    "@electron/packager": "^20.3.0"
+    "@electron/packager": "^20.3.0",
+    "electron": "44.3.0"
   },
   "//build": "Windows-only electron-builder config. mac/linux keep using scripts/package-*.cjs (@electron/packager) and are unaffected by this block. electron-builder is invoked on demand via `npx electron-builder` in CI, so it is intentionally not a dependency here (keeps package-lock.json in sync for `npm ci`).",
   "build": {
