@@ -55,8 +55,15 @@ if (process.platform === 'darwin') {
   run(path.join(qt, 'bin', 'macdeployqt'), [bundle, '-always-overwrite']);
   const dependencies = run('otool', ['-L', path.join(macos, spec.binary)], { encoding: 'utf8', stdio: 'pipe' });
   if (/\/opt\/homebrew\/|\/usr\/local\//.test(dependencies)) throw Error('Unbundled engine dependency remains');
-  run('codesign', ['--force', '--deep', '--sign', '-', bundle]);
-  run('codesign', ['--verify', '--deep', '--strict', bundle]);
+  // Sign with a stable identity when provided (DESKBRIDGE_SIGN_IDENTITY: a
+  // keychain identity name or SHA-1 hash). A stable signer keeps the macOS
+  // Accessibility (TCC) grant across rebuilds; ad-hoc ('-') loses it every
+  // build because the cdhash changes.
+  const identity = process.env.DESKBRIDGE_SIGN_IDENTITY || '-';
+  run('codesign', ['--force', '--deep', '--sign', identity, bundle]);
+  // --strict trust verification fails for a self-signed identity; only require
+  // it for ad-hoc / notarized signing.
+  run('codesign', identity === '-' ? ['--verify', '--deep', '--strict', bundle] : ['--verify', '--deep', bundle]);
   console.log(bundle);
 } else {
   fs.copyFileSync(path.join(build, 'bin', spec.binary), path.join(output, spec.binary));

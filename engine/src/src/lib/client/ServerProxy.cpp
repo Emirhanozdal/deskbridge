@@ -13,6 +13,7 @@
 #include "client/Client.h"
 #include "deskflow/Clipboard.h"
 #include "deskflow/ClipboardChunk.h"
+#include "deskflow/FileChunk.h"
 #include "deskflow/DeskflowException.h"
 #include "deskflow/OptionTypes.h"
 #include "deskflow/ProtocolTypes.h"
@@ -46,6 +47,10 @@ ServerProxy::ServerProxy(Client *client, deskflow::IStream *stream, IEventQueue 
   m_events->addHandler(EventTypes::ClipboardSending, this, [this](const auto &e) {
     ClipboardChunk::send(m_stream, e.getDataObject());
   });
+  // stream drag-and-drop file chunks (client -> server drag) out to the server
+  m_events->addHandler(EventTypes::FileChunkSending, this, [this](const auto &e) {
+    FileChunk::send(m_stream, e.getDataObject());
+  });
 
   // send heartbeat
   setKeepAliveRate(kKeepAliveRate);
@@ -56,6 +61,14 @@ ServerProxy::~ServerProxy()
   setKeepAliveRate(-1.0);
   m_events->removeHandler(EventTypes::StreamInputReady, m_stream->getEventTarget());
   m_events->removeHandler(EventTypes::ClipboardSending, this);
+  m_events->removeHandler(EventTypes::FileChunkSending, this);
+}
+
+void ServerProxy::sendDragInfo(uint32_t fileCount, const char *info, size_t size)
+{
+  std::string data(info, size);
+  LOG_DEBUG("sending drag info to server: %u file(s), %zu bytes", fileCount, size);
+  ProtocolUtil::writef(m_stream, kMsgDDragInfo, fileCount, &data);
 }
 
 void ServerProxy::resetKeepAliveAlarm()

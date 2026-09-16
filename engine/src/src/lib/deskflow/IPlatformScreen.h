@@ -222,5 +222,13 @@ public:
     // default: unsupported on this platform
   }
 
+  //! Cancel any in-progress local OS drag session on this (source) screen,
+  //! after its files have been handed to the peer. Prevents the source from
+  //! also completing the drag locally ("cursor in two places").
+  virtual void cancelLocalDrag()
+  {
+    // default: nothing to cancel
+  }
+
   //@}
 };

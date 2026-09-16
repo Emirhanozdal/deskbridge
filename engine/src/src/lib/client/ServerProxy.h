@@ -50,6 +50,9 @@ public:
   bool onGrabClipboard(ClipboardID);
   void onClipboardChanged(ClipboardID, const IClipboard *);
 
+  //! Announce a file drag from this client screen back to the server.
+  void sendDragInfo(uint32_t fileCount, const char *info, size_t size);
+
   //@}
 
 protected:

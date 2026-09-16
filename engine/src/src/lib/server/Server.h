@@ -13,6 +13,7 @@
 #include "common/NetworkProtocol.h"
 #include "deskflow/Clipboard.h"
 #include "deskflow/ClipboardTypes.h"
+#include "deskflow/FileReceiver.h"
 #include "deskflow/KeyTypes.h"
 #include "deskflow/MouseTypes.h"
 #include "server/Config.h"
@@ -340,6 +341,15 @@ private:
   // the cursor has just crossed onto (DeskBridge cross-screen drag-and-drop)
   void sendDragInfoToClient(BaseClientProxy *dst);
 
+public:
+  // receive a drag coming the other way (a client dragged a file back onto the
+  // primary screen)
+  void dragInfoReceived(uint32_t fileCount, const std::string &data);
+  void fileChunkReceived(uint8_t mark, const std::string &data);
+
+private:
+  std::string dropDirectory() const;
+
   // add client to list and attach event handlers for client
   bool addClient(BaseClientProxy *);
 
@@ -401,6 +411,9 @@ private:
 
   // server screen
   deskflow::Screen *m_screen;
+
+  // assembles a file dragged from a client onto the primary screen
+  FileReceiver m_fileReceiver;
 
   IEventQueue *m_events = nullptr;
   size_t m_maximumClipboardSize = INT_MAX;

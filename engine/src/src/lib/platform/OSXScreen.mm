@@ -1095,6 +1095,30 @@ void OSXScreen::resetDraggingState()
   m_dragPboardChangeCount = -1;
 }
 
+void OSXScreen::cancelLocalDrag()
+{
+  if (!m_draggingStarted) {
+    return;
+  }
+  // Cancel the local Finder drag session by injecting Escape, so the file is
+  // not also dropped/moved on this (source) machine once it has been handed to
+  // the peer. The two synthetic Escape events are allowed through to the local
+  // OS but suppressed from being forwarded to the peer (see handleCGInputEvent).
+  m_suppressEscapeForward += 2; // key down + key up
+  const CGKeyCode kEscape = 53;
+  CGEventRef down = CGEventCreateKeyboardEvent(nullptr, kEscape, true);
+  CGEventRef up = CGEventCreateKeyboardEvent(nullptr, kEscape, false);
+  if (down) {
+    CGEventPost(kCGHIDEventTap, down);
+    CFRelease(down);
+  }
+  if (up) {
+    CGEventPost(kCGHIDEventTap, up);
+    CFRelease(up);
+  }
+  LOG_INFO("drag: cancelled local drag session on source after handoff");
+}
+
 bool OSXScreen::onMouseButton(bool pressed, uint16_t macButton)
 {
   // Buttons 2 and 3 are inverted on the mac
@@ -1747,6 +1771,15 @@ OSXScreen::handleCGInputEventSecondary(CGEventTapProxy proxy, CGEventType type, 
 CGEventRef OSXScreen::handleCGInputEvent(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *refcon)
 {
   OSXScreen *screen = (OSXScreen *)refcon;
+
+  // Let a synthetic drag-cancel Escape reach the local OS (to cancel the source
+  // Finder drag) but never forward it to the peer, regardless of on/off screen.
+  if ((type == kCGEventKeyDown || type == kCGEventKeyUp) && screen->m_suppressEscapeForward > 0) {
+    if (CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode) == 53 /* Escape */) {
+      --screen->m_suppressEscapeForward;
+      return event;
+    }
+  }
 
   switch (type) {
   case kCGEventLeftMouseDown:

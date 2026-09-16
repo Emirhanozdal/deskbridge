@@ -65,15 +65,14 @@ bool ClientProxy1_5::parseMessage(const uint8_t *code)
 
 void ClientProxy1_5::fileChunkReceived()
 {
-  // Reverse direction (client -> server drag) is not wired yet; still drain the
-  // payload so the protocol stream stays in sync.
+  // a client dragged a file back onto the primary screen: hand it to the server
   uint8_t mark = 0;
   std::string data;
   if (!ProtocolUtil::readf(getStream(), kMsgDFileTransfer + 4, &mark, &data)) {
     LOG_WARN("failed to read incoming file chunk");
     return;
   }
-  LOG_DEBUG("received (ignored) file chunk mark=%d size=%zu", mark, data.size());
+  m_server->fileChunkReceived(mark, data);
 }
 
 void ClientProxy1_5::dragInfoReceived()
@@ -84,5 +83,5 @@ void ClientProxy1_5::dragInfoReceived()
     LOG_WARN("failed to read incoming drag info");
     return;
   }
-  LOG_DEBUG("received (ignored) drag info: %u file(s)", fileCount);
+  m_server->dragInfoReceived(fileCount, data);
 }

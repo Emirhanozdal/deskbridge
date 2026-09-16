@@ -372,9 +372,15 @@ bool Server::isLockedToScreen() const
     return false;
   }
 
-  // never lock the cursor to the screen while the user is dragging files off
-  // it: the drag must be able to cross the screen edge onto the peer.
-  if (m_screen->getPlatformScreen()->isDraggingStarted()) {
+  // Experimental cross-screen drag-carry: while dragging files, unlock the
+  // cursor so it can cross the edge. Off by default — with a physical button
+  // held this can oscillate the cursor ("cursor in two places") until the
+  // target-side synthetic drag (XDND) exists. Enable with DESKBRIDGE_DRAG_CARRY=1.
+  static const bool s_dragCarry = [] {
+    const char *v = std::getenv("DESKBRIDGE_DRAG_CARRY");
+    return v != nullptr && v[0] == '1';
+  }();
+  if (s_dragCarry && m_screen->getPlatformScreen()->isDraggingStarted()) {
     return false;
   }
 
@@ -559,6 +565,41 @@ void Server::sendDragInfoToClient(BaseClientProxy *dst)
   // this does not block the input loop.
   for (const auto &f : files) {
     StreamChunker::sendFile(f.getFilename(), m_events, dst);
+  }
+
+  // end the local Finder drag so the cursor isn't "in two places" (the file has
+  // been handed to the peer; it must not also drop on this source screen)
+  screen->cancelLocalDrag();
+}
+
+std::string Server::dropDirectory() const
+{
+  if (const std::string &target = m_screen->getPlatformScreen()->getDropTarget(); !target.empty()) {
+    return target;
+  }
+  if (const char *env = std::getenv("DESKBRIDGE_DROP_DIR"); env != nullptr && env[0] != '\0') {
+    return env;
+  }
+  if (const char *home = std::getenv("HOME"); home != nullptr && home[0] != '\0') {
+    return std::string(home) + "/Downloads";
+  }
+  return ".";
+}
+
+void Server::dragInfoReceived(uint32_t fileCount, const std::string &data)
+{
+  DragFileList files;
+  DragInformation::parseDragInfo(files, fileCount, data);
+  LOG_INFO("drag: incoming %u file(s) from a client", fileCount);
+  m_fileReceiver.setDropDirectory(dropDirectory());
+  m_fileReceiver.setDragFiles(std::move(files));
+}
+
+void Server::fileChunkReceived(uint8_t mark, const std::string &data)
+{
+  const std::string written = m_fileReceiver.onChunk(mark, data);
+  if (!written.empty()) {
+    LOG_INFO("drag: file received -> %s", written.c_str());
   }
 }
 

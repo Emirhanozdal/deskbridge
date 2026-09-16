@@ -100,6 +100,7 @@ public:
   DragFileList getDraggingFileList() override;
   const std::string &getDropTarget() const override;
   void setDropTarget(const std::string &target) override;
+  void cancelLocalDrag() override;
 
   //! Poll the macOS drag pasteboard while a drag is in progress (cheap: only
   //! reads file URLs when the pasteboard changeCount actually changes).
@@ -331,6 +332,9 @@ private:
   bool m_draggingStarted = false;
   DragFileList m_draggingFileList;
   long m_dragPboardChangeCount = -1;
+  // count of synthetic Escape key events (down+up) to let through to the local
+  // OS (to cancel a Finder drag) but NOT forward to the peer
+  int m_suppressEscapeForward = 0;
 
   Mutex *m_carbonLoopMutex;
   CondVar<bool> *m_carbonLoopReady;

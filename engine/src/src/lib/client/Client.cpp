@@ -32,6 +32,8 @@
 #include <QMetaEnum>
 
 #include <cstdlib>
+#include <filesystem>
+#include <system_error>
 #include <cstring>
 
 //
@@ -237,6 +239,10 @@ bool Client::leave()
   }
   m_active = false;
 
+  // if the user is dragging file(s) off this client back toward the server,
+  // hand the drag over before the screen tears the local drag session down
+  sendDragToServer();
+
   m_screen->leave();
 
   if (m_enableClipboard) {
@@ -410,6 +416,47 @@ void Client::fileChunkReceived(uint8_t mark, const std::string &data)
   if (!written.empty()) {
     LOG_INFO("drag: file received -> %s", written.c_str());
   }
+}
+
+void Client::sendDragToServer()
+{
+  if (m_server == nullptr || m_screen == nullptr) {
+    return;
+  }
+  IPlatformScreen *screen = m_screen->getPlatformScreen();
+  if (!screen->isDraggingStarted()) {
+    return;
+  }
+
+  DragFileList files = screen->getDraggingFileList();
+  if (files.empty()) {
+    const std::string one = screen->getDraggingFilename();
+    if (one.empty()) {
+      return;
+    }
+    files.emplace_back(one, 0);
+  }
+
+  for (auto &f : files) {
+    std::error_code ec;
+    const auto sz = std::filesystem::file_size(f.getFilename(), ec);
+    f.setFilesize(ec ? 0 : static_cast<size_t>(sz));
+  }
+
+  std::string info;
+  const uint32_t count = DragInformation::setupDragInfo(files, info);
+  if (count == 0) {
+    return;
+  }
+
+  LOG_INFO("drag: sending %u file(s) to server", count);
+  m_server->sendDragInfo(count, info.c_str(), info.size());
+  for (const auto &f : files) {
+    StreamChunker::sendFile(f.getFilename(), m_events, m_server);
+  }
+
+  // end the local drag on this (source) client so it isn't dropped here too
+  screen->cancelLocalDrag();
 }
 
 void Client::sendClipboard(ClipboardID id)

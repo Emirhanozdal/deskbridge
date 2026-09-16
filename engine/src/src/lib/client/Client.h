@@ -197,6 +197,7 @@ public:
 
 private:
   std::string dropDirectory() const;
+  void sendDragToServer();
   void saveRelativeRestorePosition();
   void sendClipboard(ClipboardID);
   void sendEvent(deskflow::EventTypes);
