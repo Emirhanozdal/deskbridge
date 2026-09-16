@@ -181,6 +181,12 @@ add_library(platform STATIC ${PLATFORM_SOURCES})
 
 target_link_libraries(platform PUBLIC client ${libs})
 
+if(WIN32)
+  # OLE drag-and-drop (OleInitialize/RegisterDragDrop/DoDragDrop) needs ole32;
+  # SHGetFolderPathW / CF_HDROP shell helpers need shell32.
+  target_link_libraries(platform PRIVATE ole32 shell32)
+endif()
+
 if(UNIX)
   target_link_libraries(platform PRIVATE net app)
 
