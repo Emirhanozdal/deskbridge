@@ -234,13 +234,16 @@ public:
   {
     return E_NOTIMPL;
   }
-  HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD dir, IEnumFORMATETC **out) override
+  HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD, IEnumFORMATETC **out) override
   {
-    if (dir != DATADIR_GET || out == nullptr) {
-      return E_NOTIMPL;
+    // Minimal single-format data object: we don't vend a format enumerator.
+    // Drop targets driven by DoDragDrop rely on QueryGetData/GetData (both
+    // implemented above), so E_NOTIMPL here is safe and avoids depending on
+    // SHCreateStdEnumFormatEtc, which isn't declared on all Windows SDKs.
+    if (out != nullptr) {
+      *out = nullptr;
     }
-    FORMATETC fmt = {CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
-    return SHCreateStdEnumFormatEtc(1, &fmt, out);
+    return E_NOTIMPL;
   }
   HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC *, DWORD, IAdviseSink *, DWORD *) override
   {
