@@ -2084,6 +2084,16 @@ void XWindowsScreen::fakeDraggingFiles(const DragFileList &fileList)
   m_dragTargetAccepts = false;
   m_dragStartTime = ARCH->time();
   m_dragRejectCount = 0;
+  // arm the event-queue watchdog so the drag is always torn down on time, even
+  // if the pointer freezes and the target stops replying (EiScreen idle-timer
+  // pattern). Fires independently of xdndUpdate/status events.
+  if (m_dragWatchdog != nullptr) {
+    m_events->removeHandler(EventTypes::Timer, m_dragWatchdog);
+    m_events->deleteTimer(m_dragWatchdog);
+    m_dragWatchdog = nullptr;
+  }
+  m_dragWatchdog = m_events->newOneShotTimer(kXdndDragTimeout, nullptr);
+  m_events->addHandler(EventTypes::Timer, m_dragWatchdog, [this](const auto &) { xdndAbort("watchdog timeout"); });
 
   // seed from the real pointer position, then start the handshake
   Window r = None;
@@ -2287,6 +2297,11 @@ void XWindowsScreen::xdndReset()
   m_dragTargetAccepts = false;
   m_dragUriList.clear();
   m_dragRejectCount = 0;
+  if (m_dragWatchdog != nullptr) {
+    m_events->removeHandler(EventTypes::Timer, m_dragWatchdog);
+    m_events->deleteTimer(m_dragWatchdog);
+    m_dragWatchdog = nullptr;
+  }
 }
 
 bool XWindowsScreen::xdndCheckDeadline()
@@ -2313,10 +2328,17 @@ void XWindowsScreen::xdndAbort(const char *why)
   if (m_dragTarget != None) {
     xdndSendLeave(m_dragTarget);
   }
-  // Release any pointer/keyboard grab so the user's cursor is never left
-  // frozen when a drag gets stuck. Safe here: we only reach abort on a failed
-  // drag, where returning control to the local pointer is the correct recovery
-  // (the server re-establishes the KVM grab on the next screen switch).
+  // The real cause of the frozen mouse: the drag was started by a synthetic
+  // Button1 PRESS (relayed), and if the matching RELEASE never arrives the X
+  // server keeps Button1 logically held. Force a synthetic release so the
+  // pointer behaves normally again (this survives even a DeskBridge restart,
+  // which does not clear the server-side button state).
+  const unsigned int leftButton = mapButtonToX(kButtonLeft);
+  if (leftButton > 0) {
+    XTestFakeButtonEvent(m_display, leftButton, False, CurrentTime);
+  }
+  // Also drop any pointer/keyboard grab we might hold (no-op on a secondary,
+  // but correct if this instance is ever the primary), then tear the drag down.
   XUngrabPointer(m_display, CurrentTime);
   XFlush(m_display);
   xdndReset();

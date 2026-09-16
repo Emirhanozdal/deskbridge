@@ -23,6 +23,7 @@
 class XWindowsClipboard;
 class XWindowsKeyState;
 class XWindowsScreenSaver;
+class EventQueueTimer;
 
 //! Implementation of IPlatformScreen for X11
 class XWindowsScreen : public PlatformScreen
@@ -254,6 +255,10 @@ private:
   int32_t m_dragY = 0;
   double m_dragStartTime = 0.0;    // ARCH time when the synthetic drag began
   int m_dragRejectCount = 0;       // consecutive XdndStatus replies with accepts=0
+  // event-queue watchdog: fires purely on time (independent of pointer motion
+  // or target replies) so a stuck drag is always torn down even if the mouse
+  // freezes and the target goes silent
+  EventQueueTimer *m_dragWatchdog = nullptr;
 
   // screen saver stuff
   XWindowsScreenSaver *m_screensaver = nullptr;
