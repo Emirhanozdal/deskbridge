@@ -8,12 +8,16 @@
 
 #pragma once
 
+#include "deskflow/DragInformation.h"
 #include "deskflow/PlatformScreen.h"
 #include "platform/MSWindowsHook.h"
 #include "platform/MSWindowsPowerManager.h"
 
+#include <atomic>
 #include <map>
 #include <string>
+#include <thread>
+#include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -23,7 +27,7 @@ class MSWindowsDesks;
 class MSWindowsKeyState;
 class MSWindowsScreenSaver;
 class Thread;
-class MSWindowsDropTarget;
+struct IDropTarget;
 
 //! Implementation of IPlatformScreen for Microsoft Windows
 class MSWindowsScreen : public PlatformScreen
@@ -121,6 +125,30 @@ public:
   void setSequenceNumber(uint32_t) override;
   bool isPrimary() const override;
   std::string getSecureInputApp() const override;
+
+  // IPlatformScreen drag-and-drop overrides (DeskBridge cross-screen file drag)
+  //
+  // Source side (this machine is the primary and the user drags file(s) off it):
+  //   isDraggingStarted / getDraggingFilename / getDraggingFileList report the
+  //   OLE drag currently leaving the screen, and cancelLocalDrag ends it locally
+  //   once the bytes have been handed to the peer.
+  // Target side (this machine is the secondary and received the file(s)):
+  //   fakeDraggingFiles starts a synthetic OLE drag (DoDragDrop / CF_HDROP)
+  //   under the relayed pointer so the file(s) drop into whatever window the
+  //   user releases over; getDropTarget / setDropTarget control where the
+  //   received bytes are written first.
+  bool isDraggingStarted() override;
+  std::string getDraggingFilename() override;
+  DragFileList getDraggingFileList() override;
+  void fakeDraggingFiles(const DragFileList &fileList) override;
+  const std::string &getDropTarget() const override;
+  void setDropTarget(const std::string &target) override;
+  void cancelLocalDrag() override;
+
+  // Called by the drag observer (IDropTarget on m_window) when a local OLE drag
+  // of file(s) enters/leaves our window, so the source side can report it.
+  void onLocalDragEnter(DragFileList files);
+  void onLocalDragLeave();
 
 protected:
   // IPlatformScreen overrides
@@ -225,6 +253,18 @@ private: // HACK
 
   // check if it is a modifier key repeating message
   bool isModifierRepeat(KeyModifierMask oldState, KeyModifierMask state, WPARAM wParam) const;
+
+  // --- DeskBridge cross-screen drag-and-drop helpers ---
+  // register/revoke the drag observer (IDropTarget) that captures a local drag
+  // leaving this screen, so isDraggingStarted() can report it.
+  void registerDragObserver();
+  void revokeDragObserver();
+  // body of the worker thread that runs the blocking DoDragDrop() modal loop for
+  // a synthetic (target-side) drag; carries its own copy of the file list.
+  void runDragThread(DragFileList files);
+  // tear down any running synthetic drag worker (used before starting a new one
+  // and on shutdown); blocks until the worker thread has exited.
+  void stopDragThread();
 
 private:
   struct HotKeyItem
@@ -336,4 +376,19 @@ private:
 
   PrimaryKeyDownList m_primaryKeyDownList;
   MSWindowsPowerManager m_powerManager;
+
+  // --- DeskBridge cross-screen drag-and-drop state ---
+  // directory received drag files are written into before the synthetic drag
+  std::string m_dropTarget;
+  // file(s) currently being dragged off this (source) screen; touched only on
+  // the main/event thread (OLE delivers IDropTarget callbacks on that thread).
+  DragFileList m_draggingFileList;
+  bool m_draggingStarted = false;
+  // the drag observer registered on m_window (IDropTarget); owned via COM
+  // ref-count, revoked in disable()/dtor.
+  IDropTarget *m_dragObserver = nullptr;
+  // synthetic (target-side) drag worker running DoDragDrop().
+  std::thread m_dragThread;
+  std::atomic<bool> m_dragActive{false}; // a synthetic drag is in progress
+  std::atomic<bool> m_dragCancel{false}; // ask the synthetic drag to abort
 };

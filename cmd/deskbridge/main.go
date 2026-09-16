@@ -117,6 +117,10 @@ func (c *cli) run(args []string) int {
 		err = c.cmdAdvertise(rest[1:])
 	case "scan":
 		err = c.cmdScan(rest[1:])
+	case "screen-view":
+		err = c.cmdScreenView(rest[1:])
+	case "screen-test":
+		err = c.cmdScreenTest(rest[1:])
 	case "diagnose":
 		err = c.cmdDiagnose()
 	case "doctor":
@@ -156,6 +160,8 @@ Commands:
   send <file>         send a file over HTTP
   advertise <device>  broadcast this device on LAN
   scan                scan LAN broadcasts
+  screen-view         open the remote-desktop viewer bridge (spike)
+  screen-test         loopback self-test of the remote-desktop video pipe
   diagnose            show local diagnostics
   doctor              alias for diagnose`)
 }

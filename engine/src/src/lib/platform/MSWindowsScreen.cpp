@@ -73,6 +73,353 @@
 #endif
 
 //
+// DeskBridge cross-screen drag-and-drop (OLE) helpers
+//
+// NOTE: none of the OLE drag code below has been exercised on real Windows
+// hardware (this repository is built and reviewed on macOS). It is a faithful
+// port of the OSXScreen.mm / XWindowsScreen.cpp drag logic to Windows OLE and
+// must be validated on a Windows box before shipping.
+//
+namespace {
+
+// Hard upper bound on how long a synthetic drag may run before it is forcibly
+// cancelled, so a lost pointer-release can never leave DoDragDrop() (and the
+// mouse button) stuck. Mirrors XWindowsScreen's xdndCheckDeadline safety net,
+// but generous because a real user is dragging across a physical link.
+constexpr double kDragTimeoutSeconds = 30.0;
+
+// Build a CF_HDROP HGLOBAL from a list of absolute local file paths.
+// Returns nullptr if no usable path was supplied. Ownership passes to the
+// data object that serves it.
+HGLOBAL createHDrop(const DragFileList &files)
+{
+  std::vector<std::wstring> wide;
+  size_t chars = 0;
+  for (const auto &f : files) {
+    const std::string &p = f.getFilename();
+    if (p.empty()) {
+      continue;
+    }
+    const int n = MultiByteToWideChar(CP_UTF8, 0, p.c_str(), -1, nullptr, 0);
+    if (n <= 1) {
+      continue;
+    }
+    std::wstring w(static_cast<size_t>(n - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, p.c_str(), -1, w.data(), n);
+    chars += w.size() + 1; // path + its null terminator
+    wide.push_back(std::move(w));
+  }
+  if (wide.empty()) {
+    return nullptr;
+  }
+  chars += 1; // final extra null: the list is double-null terminated
+
+  const SIZE_T bytes = sizeof(DROPFILES) + chars * sizeof(wchar_t);
+  HGLOBAL handle = GlobalAlloc(GHND, bytes);
+  if (handle == nullptr) {
+    return nullptr;
+  }
+
+  auto *drop = static_cast<DROPFILES *>(GlobalLock(handle));
+  drop->pFiles = sizeof(DROPFILES);
+  drop->pt.x = 0;
+  drop->pt.y = 0;
+  drop->fNC = FALSE;
+  drop->fWide = TRUE; // paths are UTF-16
+  auto *dst = reinterpret_cast<wchar_t *>(reinterpret_cast<BYTE *>(drop) + sizeof(DROPFILES));
+  for (const auto &w : wide) {
+    memcpy(dst, w.c_str(), (w.size() + 1) * sizeof(wchar_t));
+    dst += w.size() + 1;
+  }
+  *dst = L'\0'; // double-null terminate
+  GlobalUnlock(handle);
+  return handle;
+}
+
+// Extract the absolute local paths from a dragged data object's CF_HDROP.
+DragFileList readHDrop(IDataObject *data)
+{
+  DragFileList out;
+  if (data == nullptr) {
+    return out;
+  }
+  FORMATETC fmt = {CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+  STGMEDIUM stg = {};
+  if (FAILED(data->GetData(&fmt, &stg))) {
+    return out;
+  }
+  auto hdrop = static_cast<HDROP>(GlobalLock(stg.hGlobal));
+  if (hdrop != nullptr) {
+    const UINT count = DragQueryFileW(hdrop, 0xFFFFFFFF, nullptr, 0);
+    for (UINT i = 0; i < count; ++i) {
+      const UINT len = DragQueryFileW(hdrop, i, nullptr, 0);
+      if (len == 0) {
+        continue;
+      }
+      std::wstring w(static_cast<size_t>(len), L'\0');
+      DragQueryFileW(hdrop, i, w.data(), len + 1);
+      const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+      if (n > 1) {
+        std::string s(static_cast<size_t>(n - 1), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, s.data(), n, nullptr, nullptr);
+        out.emplace_back(std::move(s), 0);
+      }
+    }
+    GlobalUnlock(stg.hGlobal);
+  }
+  ReleaseStgMedium(&stg);
+  return out;
+}
+
+// Minimal IDataObject exposing exactly one CF_HDROP (the received files).
+class FileDataObject : public IDataObject
+{
+public:
+  explicit FileDataObject(HGLOBAL hdrop) : m_hdrop(hdrop)
+  {
+  }
+  ~FileDataObject()
+  {
+    if (m_hdrop != nullptr) {
+      GlobalFree(m_hdrop);
+    }
+  }
+
+  // IUnknown
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppv) override
+  {
+    if (ppv == nullptr) {
+      return E_INVALIDARG;
+    }
+    if (riid == IID_IUnknown || riid == IID_IDataObject) {
+      *ppv = static_cast<IDataObject *>(this);
+      AddRef();
+      return S_OK;
+    }
+    *ppv = nullptr;
+    return E_NOINTERFACE;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override
+  {
+    return ++m_ref;
+  }
+  ULONG STDMETHODCALLTYPE Release() override
+  {
+    const ULONG r = --m_ref;
+    if (r == 0) {
+      delete this;
+    }
+    return r;
+  }
+
+  // IDataObject
+  HRESULT STDMETHODCALLTYPE GetData(FORMATETC *fmt, STGMEDIUM *med) override
+  {
+    if (fmt == nullptr || med == nullptr) {
+      return E_INVALIDARG;
+    }
+    if (fmt->cfFormat != CF_HDROP || (fmt->tymed & TYMED_HGLOBAL) == 0 || m_hdrop == nullptr) {
+      return DV_E_FORMATETC;
+    }
+    // hand the caller its own copy so ownership is clean
+    const SIZE_T size = GlobalSize(m_hdrop);
+    HGLOBAL copy = GlobalAlloc(GHND, size);
+    if (copy == nullptr) {
+      return E_OUTOFMEMORY;
+    }
+    void *src = GlobalLock(m_hdrop);
+    void *dst = GlobalLock(copy);
+    memcpy(dst, src, size);
+    GlobalUnlock(copy);
+    GlobalUnlock(m_hdrop);
+    med->tymed = TYMED_HGLOBAL;
+    med->hGlobal = copy;
+    med->pUnkForRelease = nullptr;
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC *, STGMEDIUM *) override
+  {
+    return E_NOTIMPL;
+  }
+  HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC *fmt) override
+  {
+    if (fmt == nullptr) {
+      return E_INVALIDARG;
+    }
+    return (fmt->cfFormat == CF_HDROP && (fmt->tymed & TYMED_HGLOBAL) != 0) ? S_OK : DV_E_FORMATETC;
+  }
+  HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC *, FORMATETC *out) override
+  {
+    if (out != nullptr) {
+      out->ptd = nullptr;
+    }
+    return E_NOTIMPL;
+  }
+  HRESULT STDMETHODCALLTYPE SetData(FORMATETC *, STGMEDIUM *, BOOL) override
+  {
+    return E_NOTIMPL;
+  }
+  HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD dir, IEnumFORMATETC **out) override
+  {
+    if (dir != DATADIR_GET || out == nullptr) {
+      return E_NOTIMPL;
+    }
+    FORMATETC fmt = {CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    return SHCreateStdEnumFormatEtc(1, &fmt, out);
+  }
+  HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC *, DWORD, IAdviseSink *, DWORD *) override
+  {
+    return OLE_E_ADVISENOTSUPPORTED;
+  }
+  HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override
+  {
+    return OLE_E_ADVISENOTSUPPORTED;
+  }
+  HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA **) override
+  {
+    return OLE_E_ADVISENOTSUPPORTED;
+  }
+
+private:
+  std::atomic<ULONG> m_ref{1};
+  HGLOBAL m_hdrop;
+};
+
+// IDropSource that follows the relayed pointer/button: the drag ends with a
+// drop when the (relayed) left button is released, and is cancelled on Escape,
+// on an external cancel request, or after kDragTimeoutSeconds.
+class FileDropSource : public IDropSource
+{
+public:
+  explicit FileDropSource(std::atomic<bool> *cancel) : m_cancel(cancel), m_start(ARCH->time())
+  {
+  }
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppv) override
+  {
+    if (ppv == nullptr) {
+      return E_INVALIDARG;
+    }
+    if (riid == IID_IUnknown || riid == IID_IDropSource) {
+      *ppv = static_cast<IDropSource *>(this);
+      AddRef();
+      return S_OK;
+    }
+    *ppv = nullptr;
+    return E_NOINTERFACE;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override
+  {
+    return ++m_ref;
+  }
+  ULONG STDMETHODCALLTYPE Release() override
+  {
+    const ULONG r = --m_ref;
+    if (r == 0) {
+      delete this;
+    }
+    return r;
+  }
+
+  HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL escapePressed, DWORD keyState) override
+  {
+    if (escapePressed || (m_cancel != nullptr && m_cancel->load()) ||
+        (ARCH->time() - m_start) > kDragTimeoutSeconds) {
+      return DRAGDROP_S_CANCEL;
+    }
+    // the relayed left-button release completes the drop
+    if ((keyState & MK_LBUTTON) == 0) {
+      return DRAGDROP_S_DROP;
+    }
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) override
+  {
+    return DRAGDROP_S_USEDEFAULTCURSORS;
+  }
+
+private:
+  std::atomic<ULONG> m_ref{1};
+  std::atomic<bool> *m_cancel;
+  double m_start;
+};
+
+// IDropTarget registered on the screen window to *observe* (never accept) a
+// local OLE drag of file(s) leaving this screen, so the source side can report
+// it to the peer. See registerDragObserver() for the coverage caveat.
+class DragObserver : public IDropTarget
+{
+public:
+  explicit DragObserver(MSWindowsScreen *screen) : m_screen(screen)
+  {
+  }
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppv) override
+  {
+    if (ppv == nullptr) {
+      return E_INVALIDARG;
+    }
+    if (riid == IID_IUnknown || riid == IID_IDropTarget) {
+      *ppv = static_cast<IDropTarget *>(this);
+      AddRef();
+      return S_OK;
+    }
+    *ppv = nullptr;
+    return E_NOINTERFACE;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override
+  {
+    return ++m_ref;
+  }
+  ULONG STDMETHODCALLTYPE Release() override
+  {
+    const ULONG r = --m_ref;
+    if (r == 0) {
+      delete this;
+    }
+    return r;
+  }
+
+  HRESULT STDMETHODCALLTYPE DragEnter(IDataObject *data, DWORD, POINTL, DWORD *effect) override
+  {
+    DragFileList files = readHDrop(data);
+    if (!files.empty()) {
+      m_screen->onLocalDragEnter(std::move(files));
+    }
+    if (effect != nullptr) {
+      *effect = DROPEFFECT_NONE; // observe only; never take the drop ourselves
+    }
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL, DWORD *effect) override
+  {
+    if (effect != nullptr) {
+      *effect = DROPEFFECT_NONE;
+    }
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE DragLeave() override
+  {
+    m_screen->onLocalDragLeave();
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE Drop(IDataObject *, DWORD, POINTL, DWORD *effect) override
+  {
+    if (effect != nullptr) {
+      *effect = DROPEFFECT_NONE;
+    }
+    m_screen->onLocalDragLeave();
+    return S_OK;
+  }
+
+private:
+  std::atomic<ULONG> m_ref{1};
+  MSWindowsScreen *m_screen;
+};
+
+} // namespace
+
+//
 // MSWindowsScreen
 //
 
@@ -195,6 +542,10 @@ void MSWindowsScreen::enable()
 
     // watch jump zones
     m_hook.setMode(kHOOK_WATCH_JUMP_ZONE);
+
+    // observe local OLE drags so a file drag leaving this screen can be handed
+    // to the peer (DeskBridge cross-screen drag-and-drop, source side).
+    registerDragObserver();
   }
 }
 
@@ -212,7 +563,13 @@ void MSWindowsScreen::disable()
 
     // enable special key sequences on win95 family
     enableSpecialKeys(true);
+
+    // stop observing local OLE drags
+    revokeDragObserver();
   }
+
+  // tear down any in-progress synthetic (target-side) drag
+  stopDragThread();
 
   // tell key state
   m_keyState->disable();
@@ -1693,6 +2050,178 @@ void MSWindowsScreen::fakeLocalKey(KeyButton button, bool press) const
   input.ki.time = 0;
   input.ki.dwExtraInfo = 0;
   SendInput(1, &input, sizeof(input));
+}
+
+//
+// MSWindowsScreen -- DeskBridge cross-screen drag-and-drop (OLE)
+//
+// UNTESTED ON WINDOWS: reviewed against OSXScreen.mm / XWindowsScreen.cpp; must
+// be validated on real Windows hardware. See the notes in the anonymous
+// namespace at the top of this file and in registerDragObserver().
+//
+
+bool MSWindowsScreen::isDraggingStarted()
+{
+  return m_draggingStarted;
+}
+
+std::string MSWindowsScreen::getDraggingFilename()
+{
+  if (m_draggingFileList.empty()) {
+    return {};
+  }
+  return m_draggingFileList.front().getFilename();
+}
+
+DragFileList MSWindowsScreen::getDraggingFileList()
+{
+  return m_draggingFileList;
+}
+
+const std::string &MSWindowsScreen::getDropTarget() const
+{
+  return m_dropTarget;
+}
+
+void MSWindowsScreen::setDropTarget(const std::string &target)
+{
+  m_dropTarget = target;
+}
+
+void MSWindowsScreen::onLocalDragEnter(DragFileList files)
+{
+  // OLE delivers IDropTarget callbacks on the thread that owns the registered
+  // window (our main/event thread), so no locking is needed here.
+  m_draggingFileList = std::move(files);
+  if (!m_draggingStarted) {
+    LOG_INFO("drag: detected %zu dragged file(s) leaving this screen", m_draggingFileList.size());
+  }
+  m_draggingStarted = true;
+}
+
+void MSWindowsScreen::onLocalDragLeave()
+{
+  if (m_draggingStarted) {
+    LOG_DEBUG("drag: local drag left the observer window");
+  }
+  // Note: we intentionally keep m_draggingFileList until cancelLocalDrag() /
+  // the next drag, because the server samples getDraggingFileList() at the
+  // moment the cursor jumps to the peer, which may be just after DragLeave.
+  m_draggingStarted = false;
+}
+
+void MSWindowsScreen::cancelLocalDrag()
+{
+  // End the local OS drag on this (source) machine after its files have been
+  // handed to the peer, so the file is not also dropped/moved here. Mirrors
+  // OSXScreen::cancelLocalDrag which injects Escape to cancel the drag session.
+  if (m_draggingStarted || !m_draggingFileList.empty()) {
+    INPUT input[2] = {};
+    input[0].type = INPUT_KEYBOARD;
+    input[0].ki.wVk = VK_ESCAPE;
+    input[1].type = INPUT_KEYBOARD;
+    input[1].ki.wVk = VK_ESCAPE;
+    input[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(2, input, sizeof(INPUT));
+    LOG_INFO("drag: cancelled local drag session on source after handoff");
+  }
+  m_draggingStarted = false;
+  m_draggingFileList.clear();
+}
+
+void MSWindowsScreen::registerDragObserver()
+{
+  // The drag observer captures the file list of a local OLE drag so the source
+  // side can report it (isDraggingStarted / getDraggingFileList).
+  //
+  // CAVEAT (untested): m_window is a 1x1 WS_EX_TRANSPARENT marker window (see
+  // createWindow), so in practice a real drag will rarely pass "over" it and
+  // fire DragEnter. Production source-side capture should register this same
+  // observer on the full-screen desk windows owned by MSWindowsDesks (the
+  // windows deskflow already uses to capture the cursor at the screen edge).
+  // Registering here keeps the wiring self-contained and correct in shape; the
+  // desk-window hookup is the follow-up integration step.
+  if (m_dragObserver != nullptr || m_window == nullptr) {
+    return;
+  }
+  auto *observer = new DragObserver(this);
+  const HRESULT hr = RegisterDragDrop(m_window, observer);
+  if (FAILED(hr)) {
+    LOG_DEBUG("drag: RegisterDragDrop failed (0x%08lx); source-side drag disabled", hr);
+    observer->Release();
+    return;
+  }
+  m_dragObserver = observer; // RegisterDragDrop took its own reference
+}
+
+void MSWindowsScreen::revokeDragObserver()
+{
+  if (m_dragObserver == nullptr) {
+    return;
+  }
+  if (m_window != nullptr) {
+    RevokeDragDrop(m_window);
+  }
+  m_dragObserver->Release();
+  m_dragObserver = nullptr;
+}
+
+void MSWindowsScreen::fakeDraggingFiles(const DragFileList &fileList)
+{
+  // Target side: start a synthetic OLE drag carrying the received file(s) under
+  // the (relayed) pointer, so they drop into whatever window the user releases
+  // over. Equivalent to XWindowsScreen::fakeDraggingFiles (XDND source) and the
+  // macOS drop path.
+  if (fileList.empty()) {
+    return;
+  }
+  // never run two synthetic drags at once
+  stopDragThread();
+  m_dragCancel = false;
+  m_dragActive = true;
+  m_dragThread = std::thread(&MSWindowsScreen::runDragThread, this, fileList);
+  LOG_INFO("drag: started synthetic drag of %zu file(s)", fileList.size());
+}
+
+void MSWindowsScreen::runDragThread(DragFileList files)
+{
+  // DoDragDrop() is a blocking modal loop and needs its own OLE (STA) apartment,
+  // so it runs on this dedicated worker thread rather than the input loop.
+  const HRESULT init = OleInitialize(nullptr);
+
+  HGLOBAL hdrop = createHDrop(files);
+  if (hdrop != nullptr) {
+    auto *data = new FileDataObject(hdrop); // owns hdrop
+    auto *source = new FileDropSource(&m_dragCancel);
+    DWORD effect = 0;
+    const HRESULT hr = DoDragDrop(data, source, DROPEFFECT_COPY | DROPEFFECT_MOVE, &effect);
+    if (hr == DRAGDROP_S_DROP) {
+      LOG_INFO("drag: synthetic drop completed (effect=0x%lx)", effect);
+    } else if (hr == DRAGDROP_S_CANCEL) {
+      LOG_INFO("drag: synthetic drag cancelled");
+    } else {
+      LOG_DEBUG("drag: DoDragDrop returned 0x%08lx", hr);
+    }
+    data->Release();
+    source->Release();
+  } else {
+    LOG_WARN("drag: could not build CF_HDROP payload; synthetic drag aborted");
+  }
+
+  if (SUCCEEDED(init)) {
+    OleUninitialize();
+  }
+  m_dragActive = false;
+}
+
+void MSWindowsScreen::stopDragThread()
+{
+  if (m_dragThread.joinable()) {
+    m_dragCancel = true; // FileDropSource::QueryContinueDrag will cancel
+    m_dragThread.join();
+  }
+  m_dragActive = false;
+  m_dragCancel = false;
 }
 
 //

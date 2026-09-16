@@ -33,8 +33,11 @@ function readJSON(file, fallback) { try { return JSON.parse(fs.readFileSync(file
 function saveJSON(file, data) { fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700}); const temp=file+'.tmp'; fs.writeFileSync(temp,JSON.stringify(data,null,2),{mode:0o600}); fs.renameSync(temp,file); }
 function relayConfig() { return readJSON(relayFile, {}); }
 function binary() {
-  const locations=[path.join(process.resourcesPath,'deskbridge'), path.join(__dirname,'..','build','deskbridge')];
-  return locations.find(p=>fs.existsSync(p)) || 'deskbridge';
+  // relay CLI is deskbridge.exe on Windows, deskbridge elsewhere
+  const names=process.platform==='win32'?['deskbridge.exe','deskbridge']:['deskbridge'];
+  const dirs=[process.resourcesPath, path.join(__dirname,'..','build')];
+  for(const dir of dirs)for(const name of names){const p=path.join(dir,name);if(fs.existsSync(p))return p;}
+  return names[0];
 }
 function snapshot() { const cfg=relayConfig(); return { connected, clipboardSupported, error, layout, preferences, transfers:transfers.slice(0,60), paired:!!cfg.code, side:cfg.side, managed:!!relayProcess, latency, lastSeen, engineRunning:!!coreProcess, version:'0.3.7' }; }
 function emit() { if(win && !win.isDestroyed()) win.webContents.send('changed',snapshot()); }
@@ -146,11 +149,25 @@ async function restartCore() {
   if(coreProcess){coreProcess.kill();coreProcess=null;}
   if(mode==='server'){
     let pids=[];
-    try{pids=execFileSync('/usr/sbin/lsof',['-t','-iTCP:24800','-sTCP:LISTEN'],{encoding:'utf8'}).trim().split(/\s+/).filter(Boolean);}catch{}
-    for(const pid of pids){
-      const command=execFileSync('/bin/ps',['-p',pid,'-o','comm='],{encoding:'utf8'}).trim();
-      if(command!==engine)throw Error('Klavye portu baska bir uygulama tarafindan kullaniliyor');
-      process.kill(Number(pid),'SIGTERM');
+    if(process.platform==='win32'){
+      // netstat -ano: columns  Proto  Local  Foreign  State  PID; keep LISTENING on :24800
+      try{pids=execFileSync('netstat',['-ano','-p','TCP'],{encoding:'utf8'}).split(/\r?\n/)
+        .filter(l=>/LISTENING/i.test(l)&&/[:.]24800\b/.test(l))
+        .map(l=>l.trim().split(/\s+/).pop()).filter(Boolean);}catch{}
+      for(const pid of pids){
+        let image='';
+        try{image=execFileSync('tasklist',['/FI','PID eq '+pid,'/FO','CSV','/NH'],{encoding:'utf8'}).trim();}catch{}
+        // only kill our own engine (image name = deskbridge-input.exe); never a stranger on the port
+        if(!/deskbridge-input\.exe/i.test(image))throw Error('Klavye portu baska bir uygulama tarafindan kullaniliyor');
+        try{execFileSync('taskkill',['/PID',pid,'/T','/F']);}catch{}
+      }
+    }else{
+      try{pids=execFileSync('/usr/sbin/lsof',['-t','-iTCP:24800','-sTCP:LISTEN'],{encoding:'utf8'}).trim().split(/\s+/).filter(Boolean);}catch{}
+      for(const pid of pids){
+        const command=execFileSync('/bin/ps',['-p',pid,'-o','comm='],{encoding:'utf8'}).trim();
+        if(command!==engine)throw Error('Klavye portu baska bir uygulama tarafindan kullaniliyor');
+        process.kill(Number(pid),'SIGTERM');
+      }
     }
     for(let attempt=0;attempt<30;attempt++){
       const inUse=await new Promise(resolve=>{const s=net.connect(24800,'127.0.0.1');s.on('connect',()=>{s.destroy();resolve(true);});s.on('error',()=>resolve(false));s.setTimeout(100,()=>{s.destroy();resolve(true);});});
@@ -178,6 +195,11 @@ function handlers(){
     if(typeof data.clipboard==='boolean'){lastClipboard=JSON.stringify(await readFiles(clipboard));preferences.clipboard=data.clipboard;}
     if(typeof data.autoStart==='boolean'){
       if(process.platform==='darwin'){app.setLoginItemSettings({openAtLogin:data.autoStart});preferences.autoStart=data.autoStart;}
+      else if(process.platform==='win32'){
+        // Windows autostart via HKCU\...\Run login item, the equivalent of the
+        // launchd agent on mac. Electron writes/removes the registry entry.
+        app.setLoginItemSettings({openAtLogin:data.autoStart});preferences.autoStart=data.autoStart;
+      }
       else {const dir=path.join(process.env.XDG_CONFIG_HOME||path.join(os.homedir(),'.config'),'autostart');fs.mkdirSync(dir,{recursive:true});const file=path.join(dir,'deskbridge.desktop');if(data.autoStart)fs.writeFileSync(file,`[Desktop Entry]\nType=Application\nName=DeskBridge\nExec="${process.execPath}"\nTerminal=false\n`);else if(fs.existsSync(file))fs.unlinkSync(file);preferences.autoStart=data.autoStart;}
     }
     saveJSON(prefsFile,preferences);emit();return {ok:true};
