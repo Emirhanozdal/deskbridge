@@ -36,8 +36,8 @@ if (process.platform === 'darwin') {
     CFBundleIdentifier: 'com.deskbridge.input',
     CFBundleName: 'DeskBridge Input',
     CFBundlePackageType: 'APPL',
-    CFBundleVersion: '0.3.5',
-    CFBundleShortVersionString: '0.3.5',
+    CFBundleVersion: '0.3.6',
+    CFBundleShortVersionString: '0.3.6',
     LSUIElement: true,
     NSInputMonitoringUsageDescription: 'Share keyboard and mouse input with your paired computer.'
   }));
