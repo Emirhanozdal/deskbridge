@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -1054,10 +1055,13 @@ func xdgDownloadDir(config, home string) string {
 		if dir == "$HOME" {
 			dir = home
 		} else if strings.HasPrefix(dir, "$HOME/") {
-			dir = filepath.Join(home, strings.TrimPrefix(dir, "$HOME/"))
+			// XDG user-dirs.dirs is always POSIX (forward-slash); use path, not
+			// filepath, so this parses identically on Windows CI (where filepath
+			// would use backslashes and treat a leading "/" as non-absolute).
+			dir = path.Join(home, strings.TrimPrefix(dir, "$HOME/"))
 		}
-		if filepath.IsAbs(dir) && !strings.Contains(dir, "$") {
-			return filepath.Clean(dir)
+		if path.IsAbs(dir) && !strings.Contains(dir, "$") {
+			return path.Clean(dir)
 		}
 	}
 	return ""
