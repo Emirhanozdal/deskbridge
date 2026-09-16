@@ -566,10 +566,8 @@ void Server::sendDragInfoToClient(BaseClientProxy *dst)
   for (const auto &f : files) {
     StreamChunker::sendFile(f.getFilename(), m_events, dst);
   }
-
-  // end the local Finder drag so the cursor isn't "in two places" (the file has
-  // been handed to the peer; it must not also drop on this source screen)
-  screen->cancelLocalDrag();
+  // note: the local OS drag was already ended in the two-phase handoff (see
+  // onMouseMovePrimary) before this switch, so no cancelLocalDrag() here.
 }
 
 std::string Server::dropDirectory() const
@@ -1711,6 +1709,11 @@ bool Server::onMouseMovePrimary(int32_t x, int32_t y)
     return false;
   }
 
+  // reset the drag handoff latch whenever no drag is in progress
+  if (!m_screen->getPlatformScreen()->isDraggingStarted()) {
+    m_dragHandoffArmed = false;
+  }
+
   // save last delta
   m_xDelta2 = m_xDelta;
   m_yDelta2 = m_yDelta;
@@ -1789,6 +1792,18 @@ bool Server::onMouseMovePrimary(int32_t x, int32_t y)
 
     // should we switch or not?
     if (isSwitchOkay(newScreen, dir, x, y, xc, yc)) {
+      // Two-phase drag handoff: while a physical button is held for a file
+      // drag, macOS keeps the cursor bound to the mouse (it ignores the
+      // decouple in leave()), which makes the cursor appear on both screens.
+      // On the first edge-cross of a drag, end the local OS drag and DON'T
+      // switch yet; on the next move (once the cancel has taken effect and the
+      // cursor is free) do the real switch. Only relevant when live drag-carry
+      // is enabled (otherwise isSwitchOkay is false during a drag).
+      if (newScreen != m_primaryClient && m_screen->getPlatformScreen()->isDraggingStarted() && !m_dragHandoffArmed) {
+        m_screen->getPlatformScreen()->cancelLocalDrag();
+        m_dragHandoffArmed = true;
+        return true;
+      }
       // switch screen
       switchScreen(newScreen, x, y, false);
       return true;

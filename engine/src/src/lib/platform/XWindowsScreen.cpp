@@ -144,6 +144,9 @@ XWindowsScreen::XWindowsScreen(const char *displayName, bool isPrimary, IEventQu
     m_clipboard[id] = new XWindowsClipboard(m_display, m_window, id);
   }
 
+  // intern the XDND atoms used for cross-screen drag-and-drop
+  xdndInitAtoms();
+
   // install event handlers
   m_events->addHandler(EventTypes::System, m_events->getSystemTarget(), [this](const auto &e) {
     handleSystemEvent(e);
@@ -769,6 +772,10 @@ void XWindowsScreen::fakeMouseButton(ButtonID button, bool press)
     XTestFakeButtonEvent(m_display, xButton, press ? True : False, CurrentTime);
     XFlush(m_display);
   }
+  // releasing the left button while a synthetic XDND drag is active is the drop
+  if (!press && xButton == 1 && m_dragActive) {
+    xdndFinish();
+  }
 }
 
 void XWindowsScreen::fakeMouseMove(int32_t x, int32_t y)
@@ -779,6 +786,10 @@ void XWindowsScreen::fakeMouseMove(int32_t x, int32_t y)
     XTestFakeMotionEvent(m_display, DefaultScreen(m_display), x, y, CurrentTime);
   }
   XFlush(m_display);
+  // drive the synthetic XDND drag from the relayed (absolute) pointer position
+  if (m_dragActive) {
+    xdndUpdate(x, y);
+  }
 }
 
 void XWindowsScreen::fakeMouseRelativeMove(int32_t dx, int32_t dy) const
@@ -1232,6 +1243,11 @@ void XWindowsScreen::handleSystemEvent(const Event &event)
     break;
 
   case SelectionRequest: {
+    // an XDND target is asking for the dragged file list
+    if (m_atomXdndSelection != None && xevent->xselectionrequest.selection == m_atomXdndSelection) {
+      xdndServeSelection(xevent->xselectionrequest);
+      return;
+    }
     // somebody is asking for clipboard data
     ClipboardID id = getClipboardID(xevent->xselectionrequest.selection);
     if (id != kClipboardEnd) {
@@ -1242,6 +1258,11 @@ void XWindowsScreen::handleSystemEvent(const Event &event)
       return;
     }
   } break;
+
+  case ClientMessage:
+    // XDND target replies (XdndStatus / XdndFinished) during a synthetic drag
+    xdndOnClientMessage(xevent->xclient);
+    break;
 
   case PropertyNotify:
     // property delete may be part of a selection conversion
@@ -1959,3 +1980,342 @@ void XWindowsScreen::selectXIRawMotion()
   free(mask.mask);
 }
 #endif
+
+//
+// XDND cross-screen drag-and-drop (target-side synthetic drag)
+//
+// When this X11 screen is the drag TARGET (the peer dragged file(s) onto it),
+// the files are written to disk by the client and we then act as an XDND SOURCE
+// on the local server: we own the XdndSelection and, as the relayed pointer
+// moves, run the XDND v5 handshake (Enter/Position/Status) with whatever
+// XdndAware window is under the cursor, then Drop + serve the text/uri-list when
+// the (relayed) mouse button is released. This makes the file land in the file
+// manager / desktop / app the user releases over, not just a folder.
+//
+
+namespace {
+constexpr long kXdndVersion = 5;
+
+// percent-encode a filesystem path into the path portion of a file:// URI
+std::string xdndEncodePath(const std::string &path)
+{
+  static const char *hex = "0123456789ABCDEF";
+  std::string out;
+  out.reserve(path.size() + 8);
+  for (unsigned char c : path) {
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '/' || c == '-' ||
+        c == '_' || c == '.' || c == '~') {
+      out += static_cast<char>(c);
+    } else {
+      out += '%';
+      out += hex[c >> 4];
+      out += hex[c & 0x0F];
+    }
+  }
+  return out;
+}
+} // namespace
+
+void XWindowsScreen::xdndInitAtoms()
+{
+  m_atomXdndAware = XInternAtom(m_display, "XdndAware", False);
+  m_atomXdndSelection = XInternAtom(m_display, "XdndSelection", False);
+  m_atomXdndEnter = XInternAtom(m_display, "XdndEnter", False);
+  m_atomXdndPosition = XInternAtom(m_display, "XdndPosition", False);
+  m_atomXdndStatus = XInternAtom(m_display, "XdndStatus", False);
+  m_atomXdndLeave = XInternAtom(m_display, "XdndLeave", False);
+  m_atomXdndDrop = XInternAtom(m_display, "XdndDrop", False);
+  m_atomXdndFinished = XInternAtom(m_display, "XdndFinished", False);
+  m_atomXdndActionCopy = XInternAtom(m_display, "XdndActionCopy", False);
+  m_atomXdndTypeList = XInternAtom(m_display, "XdndTypeList", False);
+  m_atomTextUriList = XInternAtom(m_display, "text/uri-list", False);
+}
+
+const std::string &XWindowsScreen::getDropTarget() const
+{
+  return m_dropTarget;
+}
+
+void XWindowsScreen::setDropTarget(const std::string &target)
+{
+  m_dropTarget = target;
+}
+
+void XWindowsScreen::fakeDraggingFiles(const DragFileList &fileList)
+{
+  if (fileList.empty() || m_atomXdndSelection == None) {
+    return;
+  }
+
+  // build the text/uri-list payload from absolute on-disk file paths
+  std::string uris;
+  for (const auto &f : fileList) {
+    const std::string &path = f.getFilename();
+    if (path.empty() || path[0] != '/') {
+      LOG_WARN("xdnd: skipping non-absolute drag path: %s", path.c_str());
+      continue;
+    }
+    uris += "file://";
+    uris += xdndEncodePath(path);
+    uris += "\r\n";
+  }
+  if (uris.empty()) {
+    return;
+  }
+
+  xdndReset();
+  m_dragUriList = uris;
+
+  // become the owner of the XdndSelection so targets can fetch the file list
+  XSetSelectionOwner(m_display, m_atomXdndSelection, m_window, CurrentTime);
+  if (XGetSelectionOwner(m_display, m_atomXdndSelection) != m_window) {
+    LOG_WARN("xdnd: could not acquire XdndSelection; drag aborted");
+    m_dragUriList.clear();
+    return;
+  }
+
+  m_dragActive = true;
+  m_dragDropped = false;
+  m_dragTarget = None;
+  m_dragTargetVersion = 0;
+  m_dragTargetAccepts = false;
+
+  // seed from the real pointer position, then start the handshake
+  Window r = None;
+  Window c = None;
+  int rx = 0;
+  int ry = 0;
+  int wx = 0;
+  int wy = 0;
+  unsigned int mods = 0;
+  if (XQueryPointer(m_display, m_root, &r, &c, &rx, &ry, &wx, &wy, &mods)) {
+    m_dragX = rx;
+    m_dragY = ry;
+  }
+  LOG_INFO("xdnd: started synthetic drag of %zu file(s)", fileList.size());
+  xdndUpdate(m_dragX, m_dragY);
+  XFlush(m_display);
+}
+
+Window XWindowsScreen::xdndFindAwareWindow(int32_t x, int32_t y, int &versionOut) const
+{
+  versionOut = 0;
+  Window target = None;
+  Window w = m_root;
+
+  // suppress X errors: windows can disappear mid-descent
+  XWindowsUtil::ErrorLock lock(m_display);
+
+  for (int depth = 0; depth < 100; ++depth) {
+    int tx = 0;
+    int ty = 0;
+    Window child = None;
+    if (!XTranslateCoordinates(m_display, m_root, w, x, y, &tx, &ty, &child)) {
+      break;
+    }
+
+    // does this window advertise XdndAware? (skip our own drag window)
+    if (w != m_window && w != m_root) {
+      Atom actualType = None;
+      int actualFormat = 0;
+      unsigned long nitems = 0;
+      unsigned long bytesAfter = 0;
+      unsigned char *prop = nullptr;
+      if (XGetWindowProperty(
+              m_display, w, m_atomXdndAware, 0, 1, False, AnyPropertyType, &actualType, &actualFormat, &nitems,
+              &bytesAfter, &prop
+          ) == Success) {
+        if (prop != nullptr && actualType != None && nitems >= 1) {
+          const long ver = *reinterpret_cast<long *>(prop);
+          versionOut = static_cast<int>(std::min<long>(kXdndVersion, ver));
+          target = w; // remember the deepest XdndAware window in the chain
+        }
+        if (prop != nullptr) {
+          XFree(prop);
+        }
+      }
+    }
+
+    if (child == None) {
+      break;
+    }
+    w = child;
+  }
+  return target;
+}
+
+void XWindowsScreen::xdndSendEnter(Window target, int version)
+{
+  XClientMessageEvent m;
+  memset(&m, 0, sizeof(m));
+  m.type = ClientMessage;
+  m.display = m_display;
+  m.window = target;
+  m.message_type = m_atomXdndEnter;
+  m.format = 32;
+  m.data.l[0] = static_cast<long>(m_window);
+  m.data.l[1] = (static_cast<long>(version) << 24); // bit0 clear: <=3 types listed inline
+  m.data.l[2] = static_cast<long>(m_atomTextUriList);
+  m.data.l[3] = 0;
+  m.data.l[4] = 0;
+  XWindowsUtil::ErrorLock lock(m_display);
+  XSendEvent(m_display, target, False, NoEventMask, reinterpret_cast<XEvent *>(&m));
+  XFlush(m_display);
+}
+
+void XWindowsScreen::xdndSendPosition(Window target, int32_t x, int32_t y)
+{
+  XClientMessageEvent m;
+  memset(&m, 0, sizeof(m));
+  m.type = ClientMessage;
+  m.display = m_display;
+  m.window = target;
+  m.message_type = m_atomXdndPosition;
+  m.format = 32;
+  m.data.l[0] = static_cast<long>(m_window);
+  m.data.l[1] = 0;
+  m.data.l[2] = (static_cast<long>(x & 0xFFFF) << 16) | static_cast<long>(y & 0xFFFF);
+  m.data.l[3] = CurrentTime;
+  m.data.l[4] = static_cast<long>(m_atomXdndActionCopy);
+  XWindowsUtil::ErrorLock lock(m_display);
+  XSendEvent(m_display, target, False, NoEventMask, reinterpret_cast<XEvent *>(&m));
+  XFlush(m_display);
+}
+
+void XWindowsScreen::xdndSendLeave(Window target)
+{
+  XClientMessageEvent m;
+  memset(&m, 0, sizeof(m));
+  m.type = ClientMessage;
+  m.display = m_display;
+  m.window = target;
+  m.message_type = m_atomXdndLeave;
+  m.format = 32;
+  m.data.l[0] = static_cast<long>(m_window);
+  XWindowsUtil::ErrorLock lock(m_display);
+  XSendEvent(m_display, target, False, NoEventMask, reinterpret_cast<XEvent *>(&m));
+  XFlush(m_display);
+}
+
+void XWindowsScreen::xdndSendDrop(Window target)
+{
+  XClientMessageEvent m;
+  memset(&m, 0, sizeof(m));
+  m.type = ClientMessage;
+  m.display = m_display;
+  m.window = target;
+  m.message_type = m_atomXdndDrop;
+  m.format = 32;
+  m.data.l[0] = static_cast<long>(m_window);
+  m.data.l[1] = 0;
+  m.data.l[2] = CurrentTime;
+  XWindowsUtil::ErrorLock lock(m_display);
+  XSendEvent(m_display, target, False, NoEventMask, reinterpret_cast<XEvent *>(&m));
+  XFlush(m_display);
+}
+
+void XWindowsScreen::xdndUpdate(int32_t x, int32_t y)
+{
+  if (!m_dragActive || m_dragDropped) {
+    return;
+  }
+  m_dragX = x;
+  m_dragY = y;
+
+  int version = 0;
+  Window target = xdndFindAwareWindow(x, y, version);
+
+  if (target != m_dragTarget) {
+    if (m_dragTarget != None) {
+      xdndSendLeave(m_dragTarget);
+    }
+    m_dragTarget = target;
+    m_dragTargetVersion = version;
+    m_dragTargetAccepts = false;
+    if (m_dragTarget != None) {
+      xdndSendEnter(m_dragTarget, version);
+    }
+  }
+
+  if (m_dragTarget != None) {
+    xdndSendPosition(m_dragTarget, x, y);
+  }
+}
+
+void XWindowsScreen::xdndFinish()
+{
+  if (!m_dragActive) {
+    return;
+  }
+  if (m_dragTarget != None && m_dragTargetAccepts) {
+    // the target accepted: drop and keep selection ownership until it fetches
+    // the data and replies XdndFinished (handled in xdndOnClientMessage)
+    m_dragDropped = true;
+    xdndSendDrop(m_dragTarget);
+    LOG_INFO("xdnd: dropped on target 0x%08lx", static_cast<unsigned long>(m_dragTarget));
+  } else {
+    if (m_dragTarget != None) {
+      xdndSendLeave(m_dragTarget);
+    }
+    LOG_DEBUG("xdnd: released with no accepting target");
+    xdndReset();
+  }
+}
+
+void XWindowsScreen::xdndReset()
+{
+  if (m_dragActive && m_atomXdndSelection != None &&
+      XGetSelectionOwner(m_display, m_atomXdndSelection) == m_window) {
+    XSetSelectionOwner(m_display, m_atomXdndSelection, None, CurrentTime);
+  }
+  m_dragActive = false;
+  m_dragDropped = false;
+  m_dragTarget = None;
+  m_dragTargetVersion = 0;
+  m_dragTargetAccepts = false;
+  m_dragUriList.clear();
+}
+
+void XWindowsScreen::xdndOnClientMessage(const XClientMessageEvent &m)
+{
+  if (!m_dragActive) {
+    return;
+  }
+  if (m.message_type == m_atomXdndStatus) {
+    // data.l[0] = target window, data.l[1] bit0 = will accept the drop
+    if (static_cast<Window>(m.data.l[0]) == m_dragTarget) {
+      m_dragTargetAccepts = (m.data.l[1] & 0x1L) != 0;
+    }
+  } else if (m.message_type == m_atomXdndFinished) {
+    // target finished consuming the drop; tear the drag down
+    LOG_INFO("xdnd: transfer finished");
+    xdndReset();
+  }
+}
+
+void XWindowsScreen::xdndServeSelection(const XSelectionRequestEvent &req)
+{
+  XSelectionEvent notify;
+  memset(&notify, 0, sizeof(notify));
+  notify.type = SelectionNotify;
+  notify.display = req.display;
+  notify.requestor = req.requestor;
+  notify.selection = req.selection;
+  notify.target = req.target;
+  notify.time = req.time;
+  notify.property = None;
+
+  if (req.target == m_atomTextUriList && !m_dragUriList.empty()) {
+    const Atom prop = (req.property != None) ? req.property : req.target;
+    XWindowsUtil::ErrorLock lock(m_display);
+    XChangeProperty(
+        m_display, req.requestor, prop, m_atomTextUriList, 8, PropModeReplace,
+        reinterpret_cast<const unsigned char *>(m_dragUriList.data()), static_cast<int>(m_dragUriList.size())
+    );
+    notify.property = prop;
+  }
+
+  XWindowsUtil::ErrorLock lock(m_display);
+  XSendEvent(m_display, req.requestor, False, NoEventMask, reinterpret_cast<XEvent *>(&notify));
+  XFlush(m_display);
+}
