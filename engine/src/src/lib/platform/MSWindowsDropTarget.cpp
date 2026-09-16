@@ -12,6 +12,9 @@
 #include "platform/MSWindowsDropTarget.h"
 
 #include <cassert>
+// DROPFILES / HDROP live in the Shell API header; <Windows.h> alone doesn't
+// pull them in (upstream got them transitively via other shell includes).
+#include <shellapi.h>
 
 namespace {
 
