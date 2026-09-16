@@ -415,10 +415,6 @@ private:
   // assembles a file dragged from a client onto the primary screen
   FileReceiver m_fileReceiver;
 
-  // two-phase drag handoff latch: true once the local OS drag has been ended
-  // for the current edge-cross, so the follow-up move performs the real switch
-  bool m_dragHandoffArmed = false;
-
   IEventQueue *m_events = nullptr;
   size_t m_maximumClipboardSize = INT_MAX;
   ClientListener *m_clientListener = nullptr;
