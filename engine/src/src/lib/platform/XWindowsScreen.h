@@ -157,6 +157,10 @@ private:
   void xdndUpdate(int32_t x, int32_t y);
   void xdndFinish();
   void xdndReset();
+  // abort a stuck synthetic drag (target keeps rejecting, or deadline passed):
+  // tell the target we left, release any pointer grab, and tear the drag down
+  void xdndAbort(const char *why);
+  bool xdndCheckDeadline();
   void xdndOnClientMessage(const XClientMessageEvent &);
   void xdndServeSelection(const XSelectionRequestEvent &);
 
@@ -248,6 +252,8 @@ private:
   bool m_dragTargetAccepts = false;
   int32_t m_dragX = 0;
   int32_t m_dragY = 0;
+  double m_dragStartTime = 0.0;    // ARCH time when the synthetic drag began
+  int m_dragRejectCount = 0;       // consecutive XdndStatus replies with accepts=0
 
   // screen saver stuff
   XWindowsScreenSaver *m_screensaver = nullptr;

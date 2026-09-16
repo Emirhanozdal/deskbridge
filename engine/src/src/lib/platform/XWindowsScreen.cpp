@@ -1995,6 +1995,9 @@ void XWindowsScreen::selectXIRawMotion()
 
 namespace {
 constexpr long kXdndVersion = 5;
+// hard upper bound on how long a synthetic XDND drag may stay active before it
+// is force-aborted (seconds) — prevents a stuck grab from freezing the pointer
+constexpr double kXdndDragTimeout = 2.5;
 
 // percent-encode a filesystem path into the path portion of a file:// URI
 std::string xdndEncodePath(const std::string &path)
@@ -2079,6 +2082,8 @@ void XWindowsScreen::fakeDraggingFiles(const DragFileList &fileList)
   m_dragTarget = None;
   m_dragTargetVersion = 0;
   m_dragTargetAccepts = false;
+  m_dragStartTime = ARCH->time();
+  m_dragRejectCount = 0;
 
   // seed from the real pointer position, then start the handshake
   Window r = None;
@@ -2219,6 +2224,9 @@ void XWindowsScreen::xdndUpdate(int32_t x, int32_t y)
   if (!m_dragActive || m_dragDropped) {
     return;
   }
+  if (xdndCheckDeadline()) {
+    return;
+  }
   m_dragX = x;
   m_dragY = y;
 
@@ -2278,6 +2286,40 @@ void XWindowsScreen::xdndReset()
   m_dragTargetVersion = 0;
   m_dragTargetAccepts = false;
   m_dragUriList.clear();
+  m_dragRejectCount = 0;
+}
+
+bool XWindowsScreen::xdndCheckDeadline()
+{
+  // Hard safety net: a synthetic drag must never hang. If it has been active
+  // too long without a successful drop (target slow, gone, or silently
+  // ignoring us), abort so the pointer is never left grabbed/frozen.
+  if (!m_dragActive || m_dragDropped) {
+    return false;
+  }
+  if (ARCH->time() - m_dragStartTime > kXdndDragTimeout) {
+    xdndAbort("deadline exceeded");
+    return true;
+  }
+  return false;
+}
+
+void XWindowsScreen::xdndAbort(const char *why)
+{
+  if (!m_dragActive) {
+    return;
+  }
+  LOG_WARN("xdnd: aborting stuck synthetic drag: %s", why);
+  if (m_dragTarget != None) {
+    xdndSendLeave(m_dragTarget);
+  }
+  // Release any pointer/keyboard grab so the user's cursor is never left
+  // frozen when a drag gets stuck. Safe here: we only reach abort on a failed
+  // drag, where returning control to the local pointer is the correct recovery
+  // (the server re-establishes the KVM grab on the next screen switch).
+  XUngrabPointer(m_display, CurrentTime);
+  XFlush(m_display);
+  xdndReset();
 }
 
 void XWindowsScreen::xdndOnClientMessage(const XClientMessageEvent &m)
@@ -2291,6 +2333,13 @@ void XWindowsScreen::xdndOnClientMessage(const XClientMessageEvent &m)
       m_dragTargetAccepts = (m.data.l[1] & 0x1L) != 0;
       LOG_INFO("xdnd: status from target 0x%08lx accepts=%d", static_cast<unsigned long>(m_dragTarget),
                m_dragTargetAccepts ? 1 : 0);
+      if (m_dragTargetAccepts) {
+        m_dragRejectCount = 0;
+      } else if (++m_dragRejectCount >= 8) {
+        // target (e.g. a browser) keeps refusing: don't hang holding the grab
+        xdndAbort("target kept rejecting the drop (accepts=0)");
+        return;
+      }
     }
   } else if (m.message_type == m_atomXdndFinished) {
     // target finished consuming the drop; tear the drag down
