@@ -1995,6 +1995,9 @@ void XWindowsScreen::selectXIRawMotion()
 
 namespace {
 constexpr long kXdndVersion = 5;
+// hard upper bound on how long a synthetic XDND drag may stay active before it
+// is force-aborted (seconds) — prevents a stuck grab from freezing the pointer
+constexpr double kXdndDragTimeout = 2.5;
 
 // percent-encode a filesystem path into the path portion of a file:// URI
 std::string xdndEncodePath(const std::string &path)
@@ -2079,6 +2082,18 @@ void XWindowsScreen::fakeDraggingFiles(const DragFileList &fileList)
   m_dragTarget = None;
   m_dragTargetVersion = 0;
   m_dragTargetAccepts = false;
+  m_dragStartTime = ARCH->time();
+  m_dragRejectCount = 0;
+  // arm the event-queue watchdog so the drag is always torn down on time, even
+  // if the pointer freezes and the target stops replying (EiScreen idle-timer
+  // pattern). Fires independently of xdndUpdate/status events.
+  if (m_dragWatchdog != nullptr) {
+    m_events->removeHandler(EventTypes::Timer, m_dragWatchdog);
+    m_events->deleteTimer(m_dragWatchdog);
+    m_dragWatchdog = nullptr;
+  }
+  m_dragWatchdog = m_events->newOneShotTimer(kXdndDragTimeout, nullptr);
+  m_events->addHandler(EventTypes::Timer, m_dragWatchdog, [this](const auto &) { xdndAbort("watchdog timeout"); });
 
   // seed from the real pointer position, then start the handshake
   Window r = None;
@@ -2219,6 +2234,9 @@ void XWindowsScreen::xdndUpdate(int32_t x, int32_t y)
   if (!m_dragActive || m_dragDropped) {
     return;
   }
+  if (xdndCheckDeadline()) {
+    return;
+  }
   m_dragX = x;
   m_dragY = y;
 
@@ -2278,6 +2296,52 @@ void XWindowsScreen::xdndReset()
   m_dragTargetVersion = 0;
   m_dragTargetAccepts = false;
   m_dragUriList.clear();
+  m_dragRejectCount = 0;
+  if (m_dragWatchdog != nullptr) {
+    m_events->removeHandler(EventTypes::Timer, m_dragWatchdog);
+    m_events->deleteTimer(m_dragWatchdog);
+    m_dragWatchdog = nullptr;
+  }
+}
+
+bool XWindowsScreen::xdndCheckDeadline()
+{
+  // Hard safety net: a synthetic drag must never hang. If it has been active
+  // too long without a successful drop (target slow, gone, or silently
+  // ignoring us), abort so the pointer is never left grabbed/frozen.
+  if (!m_dragActive || m_dragDropped) {
+    return false;
+  }
+  if (ARCH->time() - m_dragStartTime > kXdndDragTimeout) {
+    xdndAbort("deadline exceeded");
+    return true;
+  }
+  return false;
+}
+
+void XWindowsScreen::xdndAbort(const char *why)
+{
+  if (!m_dragActive) {
+    return;
+  }
+  LOG_WARN("xdnd: aborting stuck synthetic drag: %s", why);
+  if (m_dragTarget != None) {
+    xdndSendLeave(m_dragTarget);
+  }
+  // The real cause of the frozen mouse: the drag was started by a synthetic
+  // Button1 PRESS (relayed), and if the matching RELEASE never arrives the X
+  // server keeps Button1 logically held. Force a synthetic release so the
+  // pointer behaves normally again (this survives even a DeskBridge restart,
+  // which does not clear the server-side button state).
+  const unsigned int leftButton = mapButtonToX(kButtonLeft);
+  if (leftButton > 0) {
+    XTestFakeButtonEvent(m_display, leftButton, False, CurrentTime);
+  }
+  // Also drop any pointer/keyboard grab we might hold (no-op on a secondary,
+  // but correct if this instance is ever the primary), then tear the drag down.
+  XUngrabPointer(m_display, CurrentTime);
+  XFlush(m_display);
+  xdndReset();
 }
 
 void XWindowsScreen::xdndOnClientMessage(const XClientMessageEvent &m)
@@ -2291,6 +2355,13 @@ void XWindowsScreen::xdndOnClientMessage(const XClientMessageEvent &m)
       m_dragTargetAccepts = (m.data.l[1] & 0x1L) != 0;
       LOG_INFO("xdnd: status from target 0x%08lx accepts=%d", static_cast<unsigned long>(m_dragTarget),
                m_dragTargetAccepts ? 1 : 0);
+      if (m_dragTargetAccepts) {
+        m_dragRejectCount = 0;
+      } else if (++m_dragRejectCount >= 8) {
+        // target (e.g. a browser) keeps refusing: don't hang holding the grab
+        xdndAbort("target kept rejecting the drop (accepts=0)");
+        return;
+      }
     }
   } else if (m.message_type == m_atomXdndFinished) {
     // target finished consuming the drop; tear the drag down
