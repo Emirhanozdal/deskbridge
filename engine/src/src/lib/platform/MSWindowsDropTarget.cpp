@@ -12,9 +12,10 @@
 #include "platform/MSWindowsDropTarget.h"
 
 #include <cassert>
-// DROPFILES / HDROP live in the Shell API header; <Windows.h> alone doesn't
-// pull them in (upstream got them transitively via other shell includes).
-#include <shellapi.h>
+// DROPFILES / HDROP need the Shell headers; <Windows.h> alone (esp. with
+// WIN32_LEAN_AND_MEAN, as our header sets) doesn't pull them in. <Shlobj.h> is
+// the header MSWindowsScreen.cpp already uses for DROPFILES in this tree.
+#include <Shlobj.h>
 
 namespace {
 
