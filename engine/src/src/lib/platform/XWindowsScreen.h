@@ -60,6 +60,12 @@ public:
   void fakeMouseRelativeMove(int32_t dx, int32_t dy) const override;
   void fakeMouseWheel(ScrollDelta delta) const override;
 
+  // IPlatformScreen drag-and-drop overrides (target side): start a synthetic
+  // XDND drag carrying the received files, driven by the relayed pointer.
+  void fakeDraggingFiles(const DragFileList &fileList) override;
+  const std::string &getDropTarget() const override;
+  void setDropTarget(const std::string &target) override;
+
   // IPlatformScreen overrides
   void enable() override;
   void disable() override;
@@ -141,6 +147,19 @@ private:
 
   void warpCursorNoFlush(int32_t x, int32_t y);
 
+  // XDND (cross-screen drag-and-drop) target-side synthetic drag helpers
+  void xdndInitAtoms();
+  Window xdndFindAwareWindow(int32_t x, int32_t y, int &versionOut) const;
+  void xdndSendEnter(Window target, int version);
+  void xdndSendPosition(Window target, int32_t x, int32_t y);
+  void xdndSendLeave(Window target);
+  void xdndSendDrop(Window target);
+  void xdndUpdate(int32_t x, int32_t y);
+  void xdndFinish();
+  void xdndReset();
+  void xdndOnClientMessage(const XClientMessageEvent &);
+  void xdndServeSelection(const XSelectionRequestEvent &);
+
   void refreshKeyboard(XEvent *);
 
   static Bool findKeyEvent(Display *, XEvent *xevent, XPointer arg);
@@ -207,6 +226,28 @@ private:
   // clipboards
   XWindowsClipboard *m_clipboard[kClipboardEnd];
   uint32_t m_sequenceNumber = 0;
+
+  // XDND drag-and-drop (target-side synthetic drag) state
+  Atom m_atomXdndAware = None;
+  Atom m_atomXdndSelection = None;
+  Atom m_atomXdndEnter = None;
+  Atom m_atomXdndPosition = None;
+  Atom m_atomXdndStatus = None;
+  Atom m_atomXdndLeave = None;
+  Atom m_atomXdndDrop = None;
+  Atom m_atomXdndFinished = None;
+  Atom m_atomXdndActionCopy = None;
+  Atom m_atomXdndTypeList = None;
+  Atom m_atomTextUriList = None;
+  bool m_dragActive = false;
+  bool m_dragDropped = false;     // XdndDrop sent, awaiting XdndFinished
+  std::string m_dropTarget;       // directory received drag files were written into
+  std::string m_dragUriList;      // text/uri-list payload served on selection request
+  Window m_dragTarget = None;     // current XDND-aware target toplevel (None if none)
+  int m_dragTargetVersion = 0;    // negotiated XDND protocol version with the target
+  bool m_dragTargetAccepts = false;
+  int32_t m_dragX = 0;
+  int32_t m_dragY = 0;
 
   // screen saver stuff
   XWindowsScreenSaver *m_screensaver = nullptr;

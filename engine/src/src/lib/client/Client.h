@@ -246,6 +246,10 @@ private:
   bool m_useSecureNetwork = false;
   bool m_enableClipboard = true;
   FileReceiver m_fileReceiver;
+  // cross-screen drag-and-drop receive state: once all announced files have
+  // been written to disk we start a synthetic drag under the cursor
+  uint32_t m_dragExpected = 0;
+  DragFileList m_dragReceived;
   bool m_relativeMouseMoves = false;
   bool m_hasRelativeRestorePosition = false;
   int32_t m_relativeRestoreX = 0;

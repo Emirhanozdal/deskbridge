@@ -408,13 +408,33 @@ void Client::dragInfoReceived(uint32_t fileCount, const std::string &data)
   LOG_INFO("drag: incoming %u file(s) from server", fileCount);
   m_fileReceiver.setDropDirectory(dropDirectory());
   m_fileReceiver.setDragFiles(std::move(files));
+  // reset the accumulator for this transfer
+  m_dragExpected = fileCount;
+  m_dragReceived.clear();
 }
 
 void Client::fileChunkReceived(uint8_t mark, const std::string &data)
 {
   const std::string written = m_fileReceiver.onChunk(mark, data);
-  if (!written.empty()) {
-    LOG_INFO("drag: file received -> %s", written.c_str());
+  if (written.empty()) {
+    return;
+  }
+  LOG_INFO("drag: file received -> %s", written.c_str());
+
+  // collect the actual on-disk path (may differ from the announced name if a
+  // duplicate was renamed) so the synthetic drag references the real files
+  m_dragReceived.emplace_back(written, 0);
+
+  // once every announced file has landed, start a synthetic drag under the
+  // cursor so the file(s) drop into whatever window the user releases over
+  if (m_dragExpected > 0 && m_dragReceived.size() >= m_dragExpected) {
+    if (m_screen != nullptr) {
+      IPlatformScreen *screen = m_screen->getPlatformScreen();
+      screen->setDropTarget(dropDirectory());
+      screen->fakeDraggingFiles(m_dragReceived);
+    }
+    m_dragExpected = 0;
+    m_dragReceived.clear();
   }
 }
 
