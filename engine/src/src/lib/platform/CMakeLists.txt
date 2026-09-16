@@ -44,6 +44,8 @@ if(WIN32)
     MSWindowsDebugOutputter.h
     MSWindowsDesks.cpp
     MSWindowsDesks.h
+    MSWindowsDropTarget.cpp
+    MSWindowsDropTarget.h
     MSWindowsEventQueueBuffer.cpp
     MSWindowsEventQueueBuffer.h
     MSWindowsHook.cpp

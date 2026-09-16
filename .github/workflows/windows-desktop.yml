@@ -59,10 +59,14 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: "6.4.2"
+          # Qt 6.8 LTS: the runner's MSVC (14.5x) STL dropped the <stdext>
+          # namespace that Qt 6.4.2's qvarlengtharray.h still referenced
+          # ("error C3861: 'stdext' identifier not found"). 6.8 fixed this and
+          # still satisfies the engine CMake's >= 6.4.2 requirement.
+          version: "6.8.2"
           host: windows
           target: desktop
-          arch: win64_msvc2019_64
+          arch: win64_msvc2022_64
           modules: ""
           cache: true
 

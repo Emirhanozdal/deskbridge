@@ -27,7 +27,7 @@ class MSWindowsDesks;
 class MSWindowsKeyState;
 class MSWindowsScreenSaver;
 class Thread;
-struct IDropTarget;
+class MSWindowsDropTarget;
 
 //! Implementation of IPlatformScreen for Microsoft Windows
 class MSWindowsScreen : public PlatformScreen
@@ -145,11 +145,6 @@ public:
   void setDropTarget(const std::string &target) override;
   void cancelLocalDrag() override;
 
-  // Called by the drag observer (IDropTarget on m_window) when a local OLE drag
-  // of file(s) enters/leaves our window, so the source side can report it.
-  void onLocalDragEnter(DragFileList files);
-  void onLocalDragLeave();
-
 protected:
   // IPlatformScreen overrides
   void handleSystemEvent(const Event &event) override;
@@ -167,6 +162,9 @@ private:
   ATOM createDeskWindowClass(bool isPrimary) const;
   void destroyClass(ATOM windowClass) const;
   HWND createWindow(ATOM windowClass, const wchar_t *name) const;
+  // create the small transparent window that captures the dragged file name
+  // (proven Synergy/Input Leap OLE technique; see extractDraggingFilename).
+  HWND createDropWindow(ATOM windowClass, const wchar_t *name) const;
   void destroyWindow(HWND) const;
 
   // convenience function to send events
@@ -255,10 +253,11 @@ private: // HACK
   bool isModifierRepeat(KeyModifierMask oldState, KeyModifierMask state, WPARAM wParam) const;
 
   // --- DeskBridge cross-screen drag-and-drop helpers ---
-  // register/revoke the drag observer (IDropTarget) that captures a local drag
-  // leaving this screen, so isDraggingStarted() can report it.
-  void registerDragObserver();
-  void revokeDragObserver();
+  // Source side: capture the path of the file the user is dragging off this
+  // screen using the proven OLE technique (teleport m_dropWindow under the
+  // cursor, force the in-progress drag to drop onto it, read the CF_HDROP). This
+  // also ends the local OS drag as a side effect. Caches into m_draggingFilename.
+  void extractDraggingFilename();
   // body of the worker thread that runs the blocking DoDragDrop() modal loop for
   // a synthetic (target-side) drag; carries its own copy of the file list.
   void runDragThread(DragFileList files);
@@ -378,15 +377,29 @@ private:
   MSWindowsPowerManager m_powerManager;
 
   // --- DeskBridge cross-screen drag-and-drop state ---
-  // directory received drag files are written into before the synthetic drag
-  std::string m_dropTarget;
-  // file(s) currently being dragged off this (source) screen; touched only on
-  // the main/event thread (OLE delivers IDropTarget callbacks on that thread).
-  DragFileList m_draggingFileList;
+  // Source side (proven Synergy/Input Leap OLE capture):
+  //   m_dropTarget    - IDropTarget registered on m_dropWindow that records the
+  //                     CF_HDROP path when the drag is forced to drop onto it.
+  //   m_dropWindow    - small transparent WS_EX_ACCEPTFILES window teleported
+  //                     under the cursor to capture the drag (see createDropWindow).
+  //   m_draggingFilename - path of the file being dragged off this screen,
+  //                     captured by extractDraggingFilename() and returned to the
+  //                     server/client layer via getDraggingFilename().
+  //   m_draggingStarted - true while a local file drag is in progress; set from
+  //                     onMouseMove (left button held while moving on screen).
+  MSWindowsDropTarget *m_dropTarget = nullptr;
+  HWND m_dropWindow = nullptr;
+  const int m_dropWindowSize = 20;
+  std::string m_draggingFilename;
   bool m_draggingStarted = false;
-  // the drag observer registered on m_window (IDropTarget); owned via COM
-  // ref-count, revoked in disable()/dtor.
-  IDropTarget *m_dragObserver = nullptr;
+  // directory received drag files are written into before the synthetic drag;
+  // mutable because getDropTarget() is const but lazily fills in the default
+  // (Desktop) path, matching the upstream Input Leap accessor.
+  mutable std::string m_dropTargetPath;
+  // file(s) currently being dragged off this (source) screen; retained so
+  // getDraggingFileList() can report them if ever populated (single-file capture
+  // by default, matching upstream). Touched only on the main/event thread.
+  DragFileList m_draggingFileList;
   // synthetic (target-side) drag worker running DoDragDrop().
   std::thread m_dragThread;
   std::atomic<bool> m_dragActive{false}; // a synthetic drag is in progress

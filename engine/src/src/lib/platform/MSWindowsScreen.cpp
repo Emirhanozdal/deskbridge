@@ -24,6 +24,7 @@
 #include "deskflow/ScreenException.h"
 #include "platform/MSWindowsClipboard.h"
 #include "platform/MSWindowsDesks.h"
+#include "platform/MSWindowsDropTarget.h"
 #include "platform/MSWindowsEventQueueBuffer.h"
 #include "platform/MSWindowsKeyState.h"
 #include "platform/MSWindowsScreenSaver.h"
@@ -75,10 +76,19 @@
 //
 // DeskBridge cross-screen drag-and-drop (OLE) helpers
 //
-// NOTE: none of the OLE drag code below has been exercised on real Windows
-// hardware (this repository is built and reviewed on macOS). It is a faithful
-// port of the OSXScreen.mm / XWindowsScreen.cpp drag logic to Windows OLE and
-// must be validated on a Windows box before shipping.
+// Source side (this machine is where the user starts dragging a file): the file
+// name is captured with the proven Synergy/Input Leap technique implemented in
+// MSWindowsDropTarget + extractDraggingFilename() below (a hidden drop window is
+// teleported under the cursor and the drag is forced to drop onto it).
+//
+// Target side (this machine received the file bytes): the synthetic OLE drag
+// below (createHDrop / FileDataObject / FileDropSource / runDragThread) drops
+// the received file(s) into whatever window the user releases over. NOTE: no
+// upstream GPL project ships a Windows receive-as-OLE-drag implementation
+// (Synergy/Barrier/Input Leap all leave fakeDraggingFiles() empty and rely on
+// the file simply being written into the drop-target folder). This synthetic
+// drag is therefore DeskBridge-original and has NOT been validated on real
+// Windows hardware; it must be exercised on a Windows box before shipping.
 //
 namespace {
 
@@ -134,41 +144,6 @@ HGLOBAL createHDrop(const DragFileList &files)
   *dst = L'\0'; // double-null terminate
   GlobalUnlock(handle);
   return handle;
-}
-
-// Extract the absolute local paths from a dragged data object's CF_HDROP.
-DragFileList readHDrop(IDataObject *data)
-{
-  DragFileList out;
-  if (data == nullptr) {
-    return out;
-  }
-  FORMATETC fmt = {CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
-  STGMEDIUM stg = {};
-  if (FAILED(data->GetData(&fmt, &stg))) {
-    return out;
-  }
-  auto hdrop = static_cast<HDROP>(GlobalLock(stg.hGlobal));
-  if (hdrop != nullptr) {
-    const UINT count = DragQueryFileW(hdrop, 0xFFFFFFFF, nullptr, 0);
-    for (UINT i = 0; i < count; ++i) {
-      const UINT len = DragQueryFileW(hdrop, i, nullptr, 0);
-      if (len == 0) {
-        continue;
-      }
-      std::wstring w(static_cast<size_t>(len), L'\0');
-      DragQueryFileW(hdrop, i, w.data(), len + 1);
-      const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
-      if (n > 1) {
-        std::string s(static_cast<size_t>(n - 1), '\0');
-        WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, s.data(), n, nullptr, nullptr);
-        out.emplace_back(std::move(s), 0);
-      }
-    }
-    GlobalUnlock(stg.hGlobal);
-  }
-  ReleaseStgMedium(&stg);
-  return out;
 }
 
 // Minimal IDataObject exposing exactly one CF_HDROP (the received files).
@@ -344,79 +319,6 @@ private:
   double m_start;
 };
 
-// IDropTarget registered on the screen window to *observe* (never accept) a
-// local OLE drag of file(s) leaving this screen, so the source side can report
-// it to the peer. See registerDragObserver() for the coverage caveat.
-class DragObserver : public IDropTarget
-{
-public:
-  explicit DragObserver(MSWindowsScreen *screen) : m_screen(screen)
-  {
-  }
-
-  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppv) override
-  {
-    if (ppv == nullptr) {
-      return E_INVALIDARG;
-    }
-    if (riid == IID_IUnknown || riid == IID_IDropTarget) {
-      *ppv = static_cast<IDropTarget *>(this);
-      AddRef();
-      return S_OK;
-    }
-    *ppv = nullptr;
-    return E_NOINTERFACE;
-  }
-  ULONG STDMETHODCALLTYPE AddRef() override
-  {
-    return ++m_ref;
-  }
-  ULONG STDMETHODCALLTYPE Release() override
-  {
-    const ULONG r = --m_ref;
-    if (r == 0) {
-      delete this;
-    }
-    return r;
-  }
-
-  HRESULT STDMETHODCALLTYPE DragEnter(IDataObject *data, DWORD, POINTL, DWORD *effect) override
-  {
-    DragFileList files = readHDrop(data);
-    if (!files.empty()) {
-      m_screen->onLocalDragEnter(std::move(files));
-    }
-    if (effect != nullptr) {
-      *effect = DROPEFFECT_NONE; // observe only; never take the drop ourselves
-    }
-    return S_OK;
-  }
-  HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL, DWORD *effect) override
-  {
-    if (effect != nullptr) {
-      *effect = DROPEFFECT_NONE;
-    }
-    return S_OK;
-  }
-  HRESULT STDMETHODCALLTYPE DragLeave() override
-  {
-    m_screen->onLocalDragLeave();
-    return S_OK;
-  }
-  HRESULT STDMETHODCALLTYPE Drop(IDataObject *, DWORD, POINTL, DWORD *effect) override
-  {
-    if (effect != nullptr) {
-      *effect = DROPEFFECT_NONE;
-    }
-    m_screen->onLocalDragLeave();
-    return S_OK;
-  }
-
-private:
-  std::atomic<ULONG> m_ref{1};
-  MSWindowsScreen *m_screen;
-};
-
 } // namespace
 
 //
@@ -466,6 +368,17 @@ MSWindowsScreen::MSWindowsScreen(bool isPrimary, bool useHooks, IEventQueue *eve
     }
 
     OleInitialize(0);
+
+    // Source-side drag capture (proven Synergy/Input Leap technique): a small
+    // transparent, accept-files window registered as an OLE drop target. When a
+    // file drag is handed to the peer, extractDraggingFilename() teleports this
+    // window under the cursor and forces the drag to drop onto it so the dragged
+    // path can be read from CF_HDROP.
+    m_dropWindow = createDropWindow(m_class, L"DeskBridgeDropWindow");
+    m_dropTarget = new MSWindowsDropTarget();
+    if (const HRESULT hr = RegisterDragDrop(m_dropWindow, m_dropTarget); FAILED(hr)) {
+      LOG_WARN("drag: RegisterDragDrop failed (0x%08lx); source-side file drag disabled", hr);
+    }
   } catch (...) {
     delete m_keyState;
     delete m_desks;
@@ -495,6 +408,18 @@ MSWindowsScreen::~MSWindowsScreen()
   delete m_keyState;
   delete m_desks;
   delete m_screensaver;
+
+  // tear down the source-side OLE drop target/window
+  if (m_dropWindow != nullptr) {
+    RevokeDragDrop(m_dropWindow);
+  }
+  if (m_dropTarget != nullptr) {
+    m_dropTarget->Release();
+    m_dropTarget = nullptr;
+  }
+  destroyWindow(m_dropWindow);
+  m_dropWindow = nullptr;
+
   destroyWindow(m_window);
   destroyClass(m_class);
 
@@ -542,10 +467,6 @@ void MSWindowsScreen::enable()
 
     // watch jump zones
     m_hook.setMode(kHOOK_WATCH_JUMP_ZONE);
-
-    // observe local OLE drags so a file drag leaving this screen can be handed
-    // to the peer (DeskBridge cross-screen drag-and-drop, source side).
-    registerDragObserver();
   }
 }
 
@@ -563,9 +484,6 @@ void MSWindowsScreen::disable()
 
     // enable special key sequences on win95 family
     enableSpecialKeys(true);
-
-    // stop observing local OLE drags
-    revokeDragObserver();
   }
 
   // tear down any in-progress synthetic (target-side) drag
@@ -1164,6 +1082,23 @@ HWND MSWindowsScreen::createWindow(ATOM windowClass, const wchar_t *name) const
   return window;
 }
 
+HWND MSWindowsScreen::createDropWindow(ATOM windowClass, const wchar_t *name) const
+{
+  // Ported from input-leap MSWindowsScreen::createDropWindow. WS_EX_ACCEPTFILES
+  // + registration as an OLE drop target lets this small transparent, top-most
+  // window capture the CF_HDROP of a drag forced onto it (see
+  // extractDraggingFilename). It is normally hidden and only shown briefly.
+  HWND window = CreateWindowEx(
+      WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_ACCEPTFILES, MAKEINTATOM(windowClass), name, WS_POPUP, 0, 0,
+      m_dropWindowSize, m_dropWindowSize, nullptr, nullptr, s_windowInstance, nullptr
+  );
+  if (window == nullptr) {
+    LOG_ERR("failed to create drop window: %d", GetLastError());
+    throw ScreenOpenFailureException();
+  }
+  return window;
+}
+
 void MSWindowsScreen::destroyWindow(HWND hwnd) const
 {
   if (hwnd != nullptr) {
@@ -1551,6 +1486,16 @@ bool MSWindowsScreen::onMouseButton(WPARAM wParam, LPARAM lParam)
     m_buttons[button] = pressed;
   }
 
+  // Cross-screen file drag (source side): a fresh left-button press starts a new
+  // potential drag, so clear any stale captured drag; a release ends dragging.
+  if (button == kButtonLeft) {
+    m_draggingStarted = false;
+    if (pressed) {
+      m_draggingFilename.clear();
+      m_draggingFileList.clear();
+    }
+  }
+
   // ignore message if posted prior to last mark change
   if (!ignore()) {
     KeyModifierMask mask = m_keyState->getActiveModifiers();
@@ -1599,6 +1544,14 @@ bool MSWindowsScreen::onMouseMove(int32_t mx, int32_t my)
   saveMousePosition(mx, my);
 
   if (m_isOnScreen) {
+    // Cross-screen file drag (source side): a left-button-held motion while the
+    // cursor is on this screen means the user is dragging something. Mark it so
+    // the server/client layer knows to hand the drag to the peer at the edge.
+    // Proven Synergy/Input Leap detection (see upstream onMouseMove).
+    if (m_buttons[kButtonLeft]) {
+      m_draggingStarted = true;
+    }
+
     // motion on primary screen
     sendEvent(EventTypes::PrimaryScreenMotionOnPrimary, MotionInfo::alloc(m_xCursor, m_yCursor));
   } else {
@@ -2055,9 +2008,11 @@ void MSWindowsScreen::fakeLocalKey(KeyButton button, bool press) const
 //
 // MSWindowsScreen -- DeskBridge cross-screen drag-and-drop (OLE)
 //
-// UNTESTED ON WINDOWS: reviewed against OSXScreen.mm / XWindowsScreen.cpp; must
-// be validated on real Windows hardware. See the notes in the anonymous
-// namespace at the top of this file and in registerDragObserver().
+// Source side (isDraggingStarted / getDraggingFilename / cancelLocalDrag) uses
+// the proven Synergy/Input Leap OLE capture technique (extractDraggingFilename +
+// MSWindowsDropTarget). The target-side synthetic drag (fakeDraggingFiles) is
+// DeskBridge-original and still needs validation on real Windows hardware; see
+// the note in the anonymous namespace at the top of this file.
 //
 
 bool MSWindowsScreen::isDraggingStarted()
@@ -2065,105 +2020,125 @@ bool MSWindowsScreen::isDraggingStarted()
   return m_draggingStarted;
 }
 
+void MSWindowsScreen::extractDraggingFilename()
+{
+  // Proven Synergy/Input Leap technique (ported from input-leap
+  // src/lib/platform/MSWindowsScreen.cpp getDraggingFilename): teleport the tiny
+  // transparent accept-files drop window under the cursor, then force the
+  // in-progress OLE drag to drop onto it (inject Escape + release left button).
+  // MSWindowsDropTarget::DragEnter records the CF_HDROP path, which we poll for.
+  //
+  // Injecting Escape + button-up ALSO ends the local OS drag, so this doubles as
+  // the "cancel the local drag" step of the handoff. Runs on the event thread
+  // and blocks up to ~0.5s while polling; this mirrors upstream behaviour.
+  //
+  // Idempotent: the server/client layer samples the drag more than once around a
+  // handoff (cancelLocalDrag + getDraggingFileList / getDraggingFilename). Once a
+  // name has been captured, don't re-inject and re-poll (the drag is already
+  // gone, so a second attempt would only clear a good capture).
+  if (!m_draggingStarted || !m_draggingFilename.empty()) {
+    return;
+  }
+
+  m_dropTarget->clearDraggingFilename();
+  m_draggingFilename.clear();
+
+  const int halfSize = m_dropWindowSize / 2;
+  int32_t xPos = m_isPrimary ? m_xCursor : m_xCenter;
+  int32_t yPos = m_isPrimary ? m_yCursor : m_yCenter;
+  xPos = (xPos - halfSize) < 0 ? 0 : xPos - halfSize;
+  yPos = (yPos - halfSize) < 0 ? 0 : yPos - halfSize;
+  SetWindowPos(m_dropWindow, HWND_TOPMOST, xPos, yPos, m_dropWindowSize, m_dropWindowSize, SWP_SHOWWINDOW);
+
+  // A tiny sleep here makes the DragEnter event on m_dropWindow trigger much
+  // more consistently (per upstream comment).
+  ARCH->sleep(0.05);
+  fakeKeyDown(kKeyEscape, 8192, 1, "");
+  fakeKeyUp(1);
+  fakeMouseButton(kButtonLeft, false);
+
+  std::string filename;
+  const double timeout = ARCH->time() + 0.5;
+  while (ARCH->time() < timeout) {
+    ARCH->sleep(0.05);
+    filename = m_dropTarget->getDraggingFilename();
+    if (!filename.empty()) {
+      break;
+    }
+  }
+
+  ShowWindow(m_dropWindow, SW_HIDE);
+
+  if (!filename.empty()) {
+    m_draggingFilename = filename;
+    m_draggingFileList.clear();
+    m_draggingFileList.emplace_back(filename, 0);
+    LOG_INFO("drag: captured dragged file: %s", filename.c_str());
+  } else {
+    LOG_ERR("drag: failed to get drag file name from OLE");
+  }
+}
+
 std::string MSWindowsScreen::getDraggingFilename()
 {
-  if (m_draggingFileList.empty()) {
-    return {};
+  // If the handoff already captured the name (via cancelLocalDrag ->
+  // extractDraggingFilename), return it; otherwise capture it now.
+  if (m_draggingFilename.empty()) {
+    extractDraggingFilename();
   }
-  return m_draggingFileList.front().getFilename();
+  return m_draggingFilename;
 }
 
 DragFileList MSWindowsScreen::getDraggingFileList()
 {
+  // The proven capture path is single-file; if nothing is cached yet, trigger a
+  // capture so callers that only use this accessor still get the file. The
+  // server/client layer also falls back to getDraggingFilename() when this is
+  // empty (see Server::sendDragInfoToClient / Client::sendDragToServer).
+  if (m_draggingFileList.empty() && m_draggingFilename.empty()) {
+    extractDraggingFilename();
+  }
   return m_draggingFileList;
 }
 
 const std::string &MSWindowsScreen::getDropTarget() const
 {
-  return m_dropTarget;
+  // Ported from input-leap getDropTarget: default to the user's Desktop when no
+  // explicit drop directory has been set.
+  if (m_dropTargetPath.empty()) {
+    wchar_t desktopPath[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_DESKTOPDIRECTORY, nullptr, 0, desktopPath))) {
+      const int n = WideCharToMultiByte(CP_UTF8, 0, desktopPath, -1, nullptr, 0, nullptr, nullptr);
+      if (n > 1) {
+        std::string s(static_cast<size_t>(n - 1), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, desktopPath, -1, s.data(), n, nullptr, nullptr);
+        m_dropTargetPath = std::move(s);
+        LOG_INFO("using desktop for drop target: %s", m_dropTargetPath.c_str());
+      }
+    } else {
+      LOG_ERR("failed to get desktop path, no drop target available, error=%d", GetLastError());
+    }
+  }
+  return m_dropTargetPath;
 }
 
 void MSWindowsScreen::setDropTarget(const std::string &target)
 {
-  m_dropTarget = target;
-}
-
-void MSWindowsScreen::onLocalDragEnter(DragFileList files)
-{
-  // OLE delivers IDropTarget callbacks on the thread that owns the registered
-  // window (our main/event thread), so no locking is needed here.
-  m_draggingFileList = std::move(files);
-  if (!m_draggingStarted) {
-    LOG_INFO("drag: detected %zu dragged file(s) leaving this screen", m_draggingFileList.size());
-  }
-  m_draggingStarted = true;
-}
-
-void MSWindowsScreen::onLocalDragLeave()
-{
-  if (m_draggingStarted) {
-    LOG_DEBUG("drag: local drag left the observer window");
-  }
-  // Note: we intentionally keep m_draggingFileList until cancelLocalDrag() /
-  // the next drag, because the server samples getDraggingFileList() at the
-  // moment the cursor jumps to the peer, which may be just after DragLeave.
-  m_draggingStarted = false;
+  m_dropTargetPath = target;
 }
 
 void MSWindowsScreen::cancelLocalDrag()
 {
   // End the local OS drag on this (source) machine after its files have been
-  // handed to the peer, so the file is not also dropped/moved here. Mirrors
-  // OSXScreen::cancelLocalDrag which injects Escape to cancel the drag session.
-  if (m_draggingStarted || !m_draggingFileList.empty()) {
-    INPUT input[2] = {};
-    input[0].type = INPUT_KEYBOARD;
-    input[0].ki.wVk = VK_ESCAPE;
-    input[1].type = INPUT_KEYBOARD;
-    input[1].ki.wVk = VK_ESCAPE;
-    input[1].ki.dwFlags = KEYEVENTF_KEYUP;
-    SendInput(2, input, sizeof(INPUT));
-    LOG_INFO("drag: cancelled local drag session on source after handoff");
+  // handed to the peer, so the file is not also dropped/moved here. In our
+  // handoff order the server calls this just before sampling getDraggingFilename
+  // (see Server::switchScreen), so we capture the dragged name here (which also
+  // ends the drag via the injected Escape + button-up) and keep it cached, and
+  // deliberately keep m_draggingStarted true so the subsequent isDraggingStarted
+  // sample still fires the handoff.
+  if (m_draggingStarted) {
+    extractDraggingFilename();
   }
-  m_draggingStarted = false;
-  m_draggingFileList.clear();
-}
-
-void MSWindowsScreen::registerDragObserver()
-{
-  // The drag observer captures the file list of a local OLE drag so the source
-  // side can report it (isDraggingStarted / getDraggingFileList).
-  //
-  // CAVEAT (untested): m_window is a 1x1 WS_EX_TRANSPARENT marker window (see
-  // createWindow), so in practice a real drag will rarely pass "over" it and
-  // fire DragEnter. Production source-side capture should register this same
-  // observer on the full-screen desk windows owned by MSWindowsDesks (the
-  // windows deskflow already uses to capture the cursor at the screen edge).
-  // Registering here keeps the wiring self-contained and correct in shape; the
-  // desk-window hookup is the follow-up integration step.
-  if (m_dragObserver != nullptr || m_window == nullptr) {
-    return;
-  }
-  auto *observer = new DragObserver(this);
-  const HRESULT hr = RegisterDragDrop(m_window, observer);
-  if (FAILED(hr)) {
-    LOG_DEBUG("drag: RegisterDragDrop failed (0x%08lx); source-side drag disabled", hr);
-    observer->Release();
-    return;
-  }
-  m_dragObserver = observer; // RegisterDragDrop took its own reference
-}
-
-void MSWindowsScreen::revokeDragObserver()
-{
-  if (m_dragObserver == nullptr) {
-    return;
-  }
-  if (m_window != nullptr) {
-    RevokeDragDrop(m_window);
-  }
-  m_dragObserver->Release();
-  m_dragObserver = nullptr;
 }
 
 void MSWindowsScreen::fakeDraggingFiles(const DragFileList &fileList)
