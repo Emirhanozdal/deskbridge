@@ -1800,9 +1800,13 @@ bool Server::onMouseMovePrimary(int32_t x, int32_t y)
       // cursor is free) do the real switch. Only relevant when live drag-carry
       // is enabled (otherwise isSwitchOkay is false during a drag).
       if (newScreen != m_primaryClient && m_screen->getPlatformScreen()->isDraggingStarted() && !m_dragHandoffArmed) {
+        LOG_INFO("drag: handoff phase 1 - cancelling local drag, deferring switch one tick");
         m_screen->getPlatformScreen()->cancelLocalDrag();
         m_dragHandoffArmed = true;
         return true;
+      }
+      if (m_dragHandoffArmed && newScreen != m_primaryClient) {
+        LOG_INFO("drag: handoff phase 2 - switching to \"%s\"", getName(newScreen).c_str());
       }
       // switch screen
       switchScreen(newScreen, x, y, false);

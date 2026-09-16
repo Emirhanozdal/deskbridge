@@ -431,6 +431,7 @@ void Client::fileChunkReceived(uint8_t mark, const std::string &data)
     if (m_screen != nullptr) {
       IPlatformScreen *screen = m_screen->getPlatformScreen();
       screen->setDropTarget(dropDirectory());
+      LOG_INFO("drag: all %u file(s) received, starting synthetic drag under cursor", m_dragExpected);
       screen->fakeDraggingFiles(m_dragReceived);
     }
     m_dragExpected = 0;

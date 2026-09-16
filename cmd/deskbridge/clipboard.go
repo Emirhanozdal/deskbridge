@@ -47,7 +47,7 @@ func registerClipboardReceiver(mux *http.ServeMux, opts receiverOptions) {
 			http.Error(w, "unauthorized", 401)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"clipboardFiles": opts.clipboardQueue != "", "version": "0.3.4"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"clipboardFiles": opts.clipboardQueue != "", "version": "0.3.5"})
 	})
 	mux.HandleFunc("/clipboard", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

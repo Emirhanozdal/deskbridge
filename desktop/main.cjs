@@ -36,7 +36,7 @@ function binary() {
   const locations=[path.join(process.resourcesPath,'deskbridge'), path.join(__dirname,'..','build','deskbridge')];
   return locations.find(p=>fs.existsSync(p)) || 'deskbridge';
 }
-function snapshot() { const cfg=relayConfig(); return { connected, clipboardSupported, error, layout, preferences, transfers:transfers.slice(0,60), paired:!!cfg.code, side:cfg.side, managed:!!relayProcess, latency, lastSeen, engineRunning:!!coreProcess, version:'0.3.4' }; }
+function snapshot() { const cfg=relayConfig(); return { connected, clipboardSupported, error, layout, preferences, transfers:transfers.slice(0,60), paired:!!cfg.code, side:cfg.side, managed:!!relayProcess, latency, lastSeen, engineRunning:!!coreProcess, version:'0.3.5' }; }
 function emit() { if(win && !win.isDestroyed()) win.webContents.send('changed',snapshot()); }
 function record(item) { transfers.unshift({id:randomUUID(),time:Date.now(),...item}); transfers=transfers.slice(0,200); saveJSON(historyFile,transfers); emit(); return transfers[0]; }
 function request(endpoint, method='GET', body) {
@@ -160,6 +160,9 @@ async function restartCore() {
     }
   }
   coreProcess=spawn(engine,[mode,'--settings',managed],{stdio:['ignore','pipe','pipe']});
+  // tee the input engine's output to a log file so drag-and-drop issues can be
+  // diagnosed (on macOS launchd already logs; this covers Linux)
+  try{const logFile=path.join(configDir,'input.log');const logStream=fs.createWriteStream(logFile,{flags:'a'});logStream.write('\n--- engine start '+new Date().toISOString()+' ---\n');coreProcess.stdout.pipe(logStream);coreProcess.stderr.pipe(logStream);}catch{}
   coreProcess.on('error',e=>{error=e.message;emit();});
   coreProcess.on('exit',code=>{coreProcess=null;if(code&&!closing){error='Klavye motoru yeniden baslatiliyor ('+code+')';emit();clearTimeout(coreRestartTimer);coreRestartTimer=setTimeout(()=>restartCore().catch(e=>{error=e.message;emit();}),5000);}});
 }

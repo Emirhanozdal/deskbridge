@@ -2233,7 +2233,11 @@ void XWindowsScreen::xdndUpdate(int32_t x, int32_t y)
     m_dragTargetVersion = version;
     m_dragTargetAccepts = false;
     if (m_dragTarget != None) {
+      LOG_INFO("xdnd: entered XdndAware target 0x%08lx (protocol v%d) at %d,%d", static_cast<unsigned long>(target),
+               version, x, y);
       xdndSendEnter(m_dragTarget, version);
+    } else {
+      LOG_INFO("xdnd: no XdndAware window under cursor at %d,%d", x, y);
     }
   }
 
@@ -2285,6 +2289,8 @@ void XWindowsScreen::xdndOnClientMessage(const XClientMessageEvent &m)
     // data.l[0] = target window, data.l[1] bit0 = will accept the drop
     if (static_cast<Window>(m.data.l[0]) == m_dragTarget) {
       m_dragTargetAccepts = (m.data.l[1] & 0x1L) != 0;
+      LOG_INFO("xdnd: status from target 0x%08lx accepts=%d", static_cast<unsigned long>(m_dragTarget),
+               m_dragTargetAccepts ? 1 : 0);
     }
   } else if (m.message_type == m_atomXdndFinished) {
     // target finished consuming the drop; tear the drag down
@@ -2313,6 +2319,10 @@ void XWindowsScreen::xdndServeSelection(const XSelectionRequestEvent &req)
         reinterpret_cast<const unsigned char *>(m_dragUriList.data()), static_cast<int>(m_dragUriList.size())
     );
     notify.property = prop;
+    LOG_INFO("xdnd: served uri-list (%zu bytes) to requestor 0x%08lx", m_dragUriList.size(),
+             static_cast<unsigned long>(req.requestor));
+  } else {
+    LOG_INFO("xdnd: selection request for unexpected target; refused");
   }
 
   XWindowsUtil::ErrorLock lock(m_display);

@@ -1090,6 +1090,9 @@ void OSXScreen::updateDraggingState()
 
 void OSXScreen::resetDraggingState()
 {
+  if (m_draggingStarted) {
+    LOG_INFO("drag: source drag state reset (physical button released / drag ended)");
+  }
   m_draggingStarted = false;
   m_draggingFileList.clear();
   m_dragPboardChangeCount = -1;
