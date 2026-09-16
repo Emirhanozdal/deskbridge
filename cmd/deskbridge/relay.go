@@ -307,12 +307,18 @@ func relayAccept(stream *yamux.Stream, fileAddress string) {
 		if _, err := io.ReadFull(stream, role[:]); err != nil {
 			return
 		}
-		_ = stream.SetReadDeadline(time.Time{})
 		if service[0] == screenService {
-			// Peer requested our screen: capture and push framed MJPEG until the
-			// stream closes. Bound to the stream's lifetime.
-			_ = pushScreen(context.Background(), stream, defaultCaptureOptions())
+			// Peer requested our screen. It may send an optional negotiation frame
+			// (width/fps/quality) first; give it a short window, then fall back to
+			// defaults so non-negotiating viewers keep working.
+			_ = stream.SetReadDeadline(time.Now().Add(4 * time.Second))
+			opts := negotiateCapture(stream)
+			_ = stream.SetReadDeadline(time.Time{})
+			// Capture and push framed MJPEG until the stream closes. Bound to the
+			// stream's lifetime.
+			_ = pushScreen(context.Background(), stream, opts)
 		} else {
+			_ = stream.SetReadDeadline(time.Time{})
 			// Peer is sending absolute input events for us to inject.
 			_ = serveControlSink(stream)
 		}

@@ -23,6 +23,16 @@ package main
 // byte stream (avfoundation on macOS, x11grab on Linux), split it into
 // individual JPEGs, and frame each one onto the stream. If ffmpeg is missing we
 // fail with a clear message rather than bundling it.
+//
+// Capture negotiation (Phase 1): the framing is unchanged, but the viewer may
+// send ONE optional negotiation frame as the FIRST framed payload on the screen
+// stream (service 3), right after the [service, role] header bytes. It is a small
+// JSON object {"width","fps","quality"} (streamNegotiation). The capturer reads
+// it with a short deadline (negotiateCapture) and applies it to its ffmpeg args;
+// if no frame arrives, or it is malformed, the capturer falls back to its
+// defaults, so viewers that do not negotiate keep working unchanged. All
+// subsequent frames flow capturer->viewer as JPEGs, exactly as before — no
+// per-frame type tag is introduced.
 
 import (
 	"bufio"
@@ -266,6 +276,14 @@ func pushScreen(ctx context.Context, w io.Writer, opts captureOptions) error {
 	return streamMJPEG(ctx, w, args)
 }
 
+// atoiDefault parses s as an int, returning fallback for empty/invalid input.
+func atoiDefault(s string, fallback int) int {
+	if n, err := strconv.Atoi(s); err == nil {
+		return n
+	}
+	return fallback
+}
+
 // readScreenFrames reads framed MJPEG from r and hands each JPEG to emit. The
 // viewer side uses this to feed a decoder/display.
 func readScreenFrames(r io.Reader, emit func([]byte) error) error {
@@ -301,12 +319,19 @@ type ControlEvent struct {
 }
 
 // serveControlSink reads framed ControlEvents from the peer (capturer side of a
-// service-4 stream) and dispatches them to the input injector.
-//
-// STUB: injection is logged, not performed. Real injection wires into the
-// engine's platform input layer (see integration notes in the deliverable). We
-// deliberately do NOT reach into engine/src here — that is another agent's file.
+// service-4 stream) and dispatches them to the OS input injector. The injector is
+// constructed once per stream and released when the stream closes. If no injector
+// is available on this OS (missing xdotool on Linux, unsupported platform, etc.)
+// events are drained and ignored after a single clear warning, so the video path
+// is never blocked by an input failure. Real injection is self-contained in the
+// inject_*.go files; engine/src is deliberately untouched.
 func serveControlSink(r io.Reader) error {
+	inj, err := newInjector()
+	if err != nil {
+		logInjectorUnavailable(err)
+	} else {
+		defer inj.close()
+	}
 	for {
 		frame, err := readFrame(r)
 		if err != nil {
@@ -320,14 +345,55 @@ func serveControlSink(r io.Reader) error {
 			// Skip malformed events rather than tearing down the channel.
 			continue
 		}
-		injectControl(ev)
+		if inj != nil {
+			inj.handle(ev)
+		}
 	}
 }
 
-// injectControl is the seam where an absolute input event becomes a real OS
-// input injection. Phase 0 stub: log only.
-func injectControl(ev ControlEvent) {
-	fmt.Fprintf(os.Stderr, "[control] %+v\n", ev)
+// streamNegotiation is the small header the viewer sends as the FIRST framed
+// payload on a service-3 (screen) stream, right after the [service, role] bytes.
+// It lets the viewer request a resolution/frame-rate/quality without changing the
+// [u32][payload] framing: it is simply the first frame, JSON-encoded. Fields left
+// at zero fall back to the capturer's defaults. See negotiateCapture below and
+// the "Capture negotiation" note in this file's header comments.
+type streamNegotiation struct {
+	Width   int `json:"width,omitempty"`
+	FPS     int `json:"fps,omitempty"`
+	Quality int `json:"quality,omitempty"`
+}
+
+// marshalNegotiation encodes a negotiation header for the viewer to send.
+func marshalNegotiation(n streamNegotiation) []byte {
+	data, _ := json.Marshal(n)
+	return data
+}
+
+// negotiateCapture reads the optional negotiation frame the viewer sends before
+// the stream flips to capturer->viewer frames. On any error (no header sent, a
+// read deadline expiring, malformed JSON) it returns the defaults, so viewers
+// that do not negotiate keep working unchanged. The caller is responsible for
+// setting/clearing a read deadline around this call.
+func negotiateCapture(r io.Reader) captureOptions {
+	opts := defaultCaptureOptions()
+	frame, err := readFrame(r)
+	if err != nil {
+		return opts
+	}
+	var n streamNegotiation
+	if err := json.Unmarshal(frame, &n); err != nil {
+		return opts
+	}
+	if n.Width > 0 {
+		opts.width = n.Width
+	}
+	if n.FPS > 0 {
+		opts.fps = n.FPS
+	}
+	if n.Quality > 0 {
+		opts.quality = clampQuality(n.Quality)
+	}
+	return opts
 }
 
 // serveViewerBridge runs a tiny local HTTP server that serves the standalone
@@ -366,6 +432,20 @@ func serveViewerBridge(ctx context.Context, httpPort, screenPort, controlPort in
 			return
 		}
 		defer screenConn.Close()
+
+		// Negotiation: the viewer may request width/fps/quality via query params
+		// (e.g. /ws?width=1280&fps=15&quality=6). Send it as the first framed
+		// payload so the capturer honors it; absent/zero fields use its defaults.
+		q := r.URL.Query()
+		nego := streamNegotiation{
+			Width:   atoiDefault(q.Get("width"), 0),
+			FPS:     atoiDefault(q.Get("fps"), 0),
+			Quality: atoiDefault(q.Get("quality"), 0),
+		}
+		if err := writeFrame(screenConn, marshalNegotiation(nego)); err != nil {
+			_ = c.Close(websocket.StatusInternalError, "screen negotiation failed")
+			return
+		}
 
 		// Frames peer -> browser.
 		go func() {
@@ -543,14 +623,16 @@ const remoteViewerHTML = `<!doctype html>
 <title>DeskBridge Remote Viewer (spike)</title>
 <style>
   html,body{margin:0;height:100%;background:#0c0f12;color:#e8eef2;font:13px system-ui,-apple-system,sans-serif}
-  header{display:flex;gap:14px;align-items:center;padding:8px 14px;background:#141a20;border-bottom:1px solid #232c34}
+  header{display:flex;gap:12px;align-items:center;padding:8px 14px;background:#141a20;border-bottom:1px solid #232c34;flex-wrap:wrap}
   header b{font-size:14px}
+  header .spacer{flex:1}
   #stat{color:#8fa3b0}
-  #wrap{position:absolute;inset:44px 0 0 0;display:grid;place-items:center;overflow:hidden}
+  #wrap{position:absolute;inset:52px 0 0 0;display:grid;place-items:center;overflow:hidden}
   canvas{max-width:100%;max-height:100%;background:#000;cursor:crosshair;outline:none}
   .dot{width:8px;height:8px;border-radius:50%;background:#e0574a;display:inline-block}
   .dot.on{background:#2ecc71}
-  label{color:#8fa3b0}
+  label{color:#8fa3b0;display:inline-flex;gap:4px;align-items:center}
+  select{background:#0f1418;color:#e8eef2;border:1px solid #2a333b;border-radius:5px;padding:3px 6px}
 </style>
 </head>
 <body>
@@ -559,28 +641,65 @@ const remoteViewerHTML = `<!doctype html>
   <span class="dot" id="led"></span>
   <span id="stat">connecting…</span>
   <label><input type="checkbox" id="ctl" checked> send input</label>
-  <span id="fps"></span>
+  <span class="spacer"></span>
+  <label>Quality
+    <select id="quality" title="mjpeg -q:v (lower = sharper)">
+      <option value="4">High</option>
+      <option value="7" selected>Medium</option>
+      <option value="12">Low</option>
+      <option value="18">Lowest</option>
+    </select>
+  </label>
+  <label>FPS
+    <select id="fps">
+      <option value="6">6</option>
+      <option value="12" selected>12</option>
+      <option value="20">20</option>
+      <option value="30">30</option>
+    </select>
+  </label>
+  <label>Width
+    <select id="width">
+      <option value="960">960</option>
+      <option value="1280" selected>1280</option>
+      <option value="1600">1600</option>
+      <option value="0">Full</option>
+    </select>
+  </label>
+  <span id="fpsCounter"></span>
 </header>
 <div id="wrap"><canvas id="cv" tabindex="0" width="1280" height="720"></canvas></div>
 <script>
 // Standalone SPIKE viewer. Connects to the local bridge (deskbridge screen-view)
 // over WebSocket. Each binary message is one JPEG frame; canvas mouse/keyboard
 // events are normalized to 0..1 and sent back as JSON control events (service 4).
+// Desired capture width/fps/quality are passed to the bridge as /ws query params,
+// which the bridge turns into the streamNegotiation header on the screen stream.
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
 const stat = document.getElementById('stat');
 const led = document.getElementById('led');
-const fpsEl = document.getElementById('fps');
+const fpsEl = document.getElementById('fpsCounter');
 const ctl = document.getElementById('ctl');
+const qualitySel = document.getElementById('quality');
+const fpsSel = document.getElementById('fps');
+const widthSel = document.getElementById('width');
 
-const wsURL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
-let ws, frames = 0, last = performance.now();
+let ws, frames = 0, last = performance.now(), reconnectTimer;
+
+function wsURL() {
+  const base = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+  const q = new URLSearchParams({ width: widthSel.value, fps: fpsSel.value, quality: qualitySel.value });
+  return base + '?' + q.toString();
+}
 
 function connect() {
-  ws = new WebSocket(wsURL);
+  clearTimeout(reconnectTimer);
+  if (ws) { try { ws.onclose = null; ws.close(); } catch (e) {} }
+  ws = new WebSocket(wsURL());
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => { led.classList.add('on'); stat.textContent = 'connected'; };
-  ws.onclose = () => { led.classList.remove('on'); stat.textContent = 'disconnected — retrying'; setTimeout(connect, 1500); };
+  ws.onclose = () => { led.classList.remove('on'); stat.textContent = 'disconnected — retrying'; reconnectTimer = setTimeout(connect, 1500); };
   ws.onerror = () => { stat.textContent = 'error'; };
   ws.onmessage = async (ev) => {
     const bmp = await createImageBitmap(new Blob([ev.data], {type: 'image/jpeg'}));
@@ -592,6 +711,8 @@ function connect() {
     if (now - last >= 1000) { fpsEl.textContent = frames + ' fps'; frames = 0; last = now; }
   };
 }
+// Reconnect with fresh negotiation params when a quality knob changes.
+[qualitySel, fpsSel, widthSel].forEach(el => el.addEventListener('change', connect));
 connect();
 
 function send(ev) {

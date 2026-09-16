@@ -1,0 +1,12 @@
+html,body{margin:0;height:100%;background:#0c0f12;color:#e8eef2;font:13px system-ui,-apple-system,sans-serif}
+header{display:flex;gap:12px;align-items:center;padding:8px 14px;background:#141a20;border-bottom:1px solid #232c34;flex-wrap:wrap}
+header b{font-size:14px}
+header .spacer{flex:1}
+#stat{color:#8fa3b0}
+label{color:#8fa3b0;display:inline-flex;gap:4px;align-items:center}
+select{background:#0f1418;color:#e8eef2;border:1px solid #2a333b;border-radius:5px;padding:3px 6px}
+#wrap{position:absolute;inset:52px 0 0 0;display:grid;place-items:center;overflow:hidden}
+canvas{max-width:100%;max-height:100%;background:#000;cursor:crosshair;outline:none}
+.dot{width:8px;height:8px;border-radius:50%;background:#e0574a;display:inline-block}
+.dot.on{background:#2ecc71}
+#fpsCounter{color:#8fa3b0;min-width:48px;text-align:right}

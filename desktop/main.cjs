@@ -11,10 +11,12 @@ const { readLayout, changeLayout } = require('./layout.cjs');
 const { readFiles, fileItem } = require('./clipboard.cjs');
 const { resolveEngine } = require('./engine.cjs');
 const { inputSettings } = require('./input-settings.cjs');
+const { createRemote } = require('./remote.cjs');
 
 app.setName('DeskBridge');
 if (!app.requestSingleInstanceLock()) app.quit();
 let win, tray, relayProcess, coreProcess, coreRestartTimer, closing = false, pollBusy = false, clipboardBusy = false;
+let remote = null;
 let connected = false, clipboardSupported = false, lastClipboard = '', error = '', transfers = [];
 let latency = null, lastSeen = 0;
 let preferences = { clipboard: false, direction: 'left', autoStart: false };
@@ -205,6 +207,12 @@ function handlers(){
     saveJSON(prefsFile,preferences);emit();return {ok:true};
   });
   handle('apply-layout',applyLayout);handle('connect',()=>{startRelay();return {ok:true};});
+  handle('open-remote',opts=>{
+    if(!connected)throw Error('Diger cihaz bagli degil');
+    if(!remote)remote=createRemote({BrowserWindow,ipcMain,iconPath:path.join(__dirname,'icon.png')});
+    remote.open(opts&&typeof opts==='object'?opts:{});
+    return {ok:true};
+  });
   handle('generate-pairing',()=>({code:randomBytes(32).toString('hex')}));
   handle('copy-text',value=>{if(typeof value!=='string'||value.length>256)throw Error('Gecersiz metin');clipboard.writeText(value);return {ok:true};});
   handle('open-relay-setup',()=>shell.openExternal(deployRelay));
@@ -216,7 +224,7 @@ function handlers(){
 }
 function showWindow(){if(win){win.show();return;}win=new BrowserWindow({width:1060,height:740,minWidth:760,minHeight:600,title:'DeskBridge',icon:path.join(__dirname,'icon.png'),backgroundColor:'#f5f7f8',webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true}});win.loadFile(path.join(__dirname,'index.html'));win.webContents.setWindowOpenHandler(()=>({action:'deny'}));win.webContents.on('will-navigate',e=>e.preventDefault());win.on('close',e=>{if(!closing){e.preventDefault();win.hide();}});}
 app.on('second-instance',showWindow);app.on('activate',showWindow);
-app.on('before-quit',()=>{closing=true;clearTimeout(coreRestartTimer);relayProcess?.kill();coreProcess?.kill();});
+app.on('before-quit',()=>{closing=true;clearTimeout(coreRestartTimer);relayProcess?.kill();coreProcess?.kill();remote?.destroy();});
 app.whenReady().then(async()=>{
   if(process.platform==='darwin')app.dock.setIcon(path.join(__dirname,'icon.png'));
   preferences={...preferences,...readJSON(prefsFile,{})};transfers=readJSON(historyFile,[]);readCurrentLayout();handlers();

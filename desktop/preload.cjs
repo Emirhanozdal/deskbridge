@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('deskbridge', {
   configure: settings => ipcRenderer.invoke('configure', settings),
   applyLayout: layout => ipcRenderer.invoke('apply-layout', layout),
   connect: () => ipcRenderer.invoke('connect'),
+  openRemote: opts => ipcRenderer.invoke('open-remote', opts),
   pair: input => ipcRenderer.invoke('pair', input),
   generatePairing: () => ipcRenderer.invoke('generate-pairing'),
   openRelaySetup: () => ipcRenderer.invoke('open-relay-setup'),

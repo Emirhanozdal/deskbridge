@@ -132,6 +132,95 @@ func TestScreenPipeLoopback(t *testing.T) {
 	}
 }
 
+// TestAbsCoords verifies normalized->absolute mapping, including clamping at the
+// edges so nx/ny == 1 stays inside the display and out-of-range values are pinned.
+func TestAbsCoords(t *testing.T) {
+	cases := []struct {
+		nx, ny float64
+		w, h   int
+		wantX  int
+		wantY  int
+	}{
+		{0, 0, 1920, 1080, 0, 0},
+		{0.5, 0.5, 1920, 1080, 960, 540},
+		{1, 1, 1920, 1080, 1919, 1079}, // last addressable pixel, not one past
+		{0.25, 0.75, 1000, 800, 250, 600},
+		{-0.5, 2.0, 1280, 720, 0, 719}, // clamped below 0 and above 1
+		{0.999, 0.999, 100, 100, 99, 99},
+	}
+	for _, c := range cases {
+		x, y := absCoords(c.nx, c.ny, c.w, c.h)
+		if x != c.wantX || y != c.wantY {
+			t.Errorf("absCoords(%v,%v,%d,%d)=(%d,%d), want (%d,%d)", c.nx, c.ny, c.w, c.h, x, y, c.wantX, c.wantY)
+		}
+	}
+}
+
+// TestNegotiateCapture checks the capture-negotiation header parsing: a valid
+// header overrides defaults (with quality clamped), and absent/malformed/empty
+// input falls back to defaults so non-negotiating viewers keep working.
+func TestNegotiateCapture(t *testing.T) {
+	def := defaultCaptureOptions()
+
+	// Valid header with an out-of-range quality that must be clamped to 31.
+	var buf bytes.Buffer
+	if err := writeFrame(&buf, marshalNegotiation(streamNegotiation{Width: 800, FPS: 20, Quality: 99})); err != nil {
+		t.Fatal(err)
+	}
+	got := negotiateCapture(&buf)
+	if got.width != 800 || got.fps != 20 || got.quality != 31 {
+		t.Fatalf("negotiated=%+v, want width=800 fps=20 quality=31", got)
+	}
+
+	// Zero fields keep the defaults.
+	buf.Reset()
+	if err := writeFrame(&buf, marshalNegotiation(streamNegotiation{Width: 640})); err != nil {
+		t.Fatal(err)
+	}
+	got = negotiateCapture(&buf)
+	if got.width != 640 || got.fps != def.fps || got.quality != def.quality {
+		t.Fatalf("partial negotiated=%+v, want width=640 with default fps/quality", got)
+	}
+
+	// No header at all (EOF) -> defaults.
+	empty := bytes.NewReader(nil)
+	if got := negotiateCapture(empty); got != def {
+		t.Fatalf("empty negotiated=%+v, want defaults %+v", got, def)
+	}
+
+	// Malformed JSON frame -> defaults.
+	buf.Reset()
+	if err := writeFrame(&buf, []byte("not-json")); err != nil {
+		t.Fatal(err)
+	}
+	if got := negotiateCapture(&buf); got != def {
+		t.Fatalf("malformed negotiated=%+v, want defaults %+v", got, def)
+	}
+}
+
+// TestModifierState confirms modifier key events latch/clear the chord state.
+func TestModifierState(t *testing.T) {
+	var m modifierState
+	if !m.update(ControlEvent{Type: "key", Code: "ShiftLeft", Down: true}) {
+		t.Fatal("ShiftLeft should be reported as a modifier")
+	}
+	if !m.shift {
+		t.Fatal("shift should be latched on")
+	}
+	if m.update(ControlEvent{Type: "key", Code: "KeyA", Down: true}) {
+		t.Fatal("KeyA is not a modifier")
+	}
+	m.update(ControlEvent{Type: "key", Code: "ShiftLeft", Down: false})
+	if m.shift {
+		t.Fatal("shift should clear on release")
+	}
+	m.update(ControlEvent{Type: "key", Code: "MetaLeft", Down: true})
+	m.update(ControlEvent{Type: "key", Code: "ControlRight", Down: true})
+	if !m.meta || !m.control {
+		t.Fatal("meta+control should both latch")
+	}
+}
+
 // TestControlSinkDecodesEvents confirms framed ControlEvents deframe and decode.
 func TestControlSinkDecodesEvents(t *testing.T) {
 	events := []ControlEvent{
