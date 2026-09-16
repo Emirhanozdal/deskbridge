@@ -34,8 +34,8 @@ execFileSync(process.execPath, [
   '--asar',
   '--app-bundle-id=com.deskbridge.app',
   '--icon', path.join(root, 'desktop', 'icon.icns'),
-  '--app-version=0.3.3',
-  '--build-version=0.3.3',
+  '--app-version=0.3.4',
+  '--build-version=0.3.4',
   '--electron-zip-dir=' + path.dirname(electronZip),
   '--extra-resource=' + relay,
   '--extra-resource=' + input

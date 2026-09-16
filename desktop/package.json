@@ -1,7 +1,7 @@
 {
   "name": "deskbridge-desktop",
   "productName": "DeskBridge",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "private": true,
   "main": "main.cjs",
   "scripts": {
