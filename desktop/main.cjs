@@ -41,7 +41,7 @@ function binary() {
   for(const dir of dirs)for(const name of names){const p=path.join(dir,name);if(fs.existsSync(p))return p;}
   return names[0];
 }
-function snapshot() { const cfg=relayConfig(); return { connected, clipboardSupported, error, layout, preferences, transfers:transfers.slice(0,60), paired:!!cfg.code, side:cfg.side, managed:!!relayProcess, latency, lastSeen, engineRunning:!!coreProcess, version:'0.3.7' }; }
+function snapshot() { const cfg=relayConfig(); return { connected, clipboardSupported, error, layout, preferences, transfers:transfers.slice(0,60), paired:!!cfg.code, side:cfg.side, managed:!!relayProcess, latency, lastSeen, engineRunning:!!coreProcess, version:'0.4.0' }; }
 function emit() { if(win && !win.isDestroyed()) win.webContents.send('changed',snapshot()); }
 function record(item) { transfers.unshift({id:randomUUID(),time:Date.now(),...item}); transfers=transfers.slice(0,200); saveJSON(historyFile,transfers); emit(); return transfers[0]; }
 function request(endpoint, method='GET', body) {

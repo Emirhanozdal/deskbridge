@@ -1,7 +1,7 @@
 {
   "name": "deskbridge-desktop",
   "productName": "DeskBridge",
-  "version": "0.3.7",
+  "version": "0.4.0",
   "description": "DeskBridge desktop app — cross-screen keyboard, mouse, clipboard, file drag-drop and remote screen over a private relay.",
   "author": "DeskBridge",
   "private": true,
