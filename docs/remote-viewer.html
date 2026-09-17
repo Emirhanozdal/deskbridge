@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeskBridge Remote Viewer (spike)</title>
+<style>
+  html,body{margin:0;height:100%;background:#0c0f12;color:#e8eef2;font:13px system-ui,-apple-system,sans-serif}
+  header{display:flex;gap:12px;align-items:center;padding:8px 14px;background:#141a20;border-bottom:1px solid #232c34;flex-wrap:wrap}
+  header b{font-size:14px}
+  header .spacer{flex:1}
+  #stat{color:#8fa3b0}
+  #wrap{position:absolute;inset:52px 0 0 0;display:grid;place-items:center;overflow:hidden}
+  canvas{max-width:100%;max-height:100%;background:#000;cursor:crosshair;outline:none}
+  .dot{width:8px;height:8px;border-radius:50%;background:#e0574a;display:inline-block}
+  .dot.on{background:#2ecc71}
+  label{color:#8fa3b0;display:inline-flex;gap:4px;align-items:center}
+  select{background:#0f1418;color:#e8eef2;border:1px solid #2a333b;border-radius:5px;padding:3px 6px}
+</style>
+</head>
+<body>
+<header>
+  <b>DeskBridge Remote Viewer</b>
+  <span class="dot" id="led"></span>
+  <span id="stat">connecting…</span>
+  <label><input type="checkbox" id="ctl" checked> send input</label>
+  <span class="spacer"></span>
+  <label>Quality
+    <select id="quality" title="mjpeg -q:v (lower = sharper)">
+      <option value="4">High</option>
+      <option value="7" selected>Medium</option>
+      <option value="12">Low</option>
+      <option value="18">Lowest</option>
+    </select>
+  </label>
+  <label>FPS
+    <select id="fps">
+      <option value="6">6</option>
+      <option value="12" selected>12</option>
+      <option value="20">20</option>
+      <option value="30">30</option>
+    </select>
+  </label>
+  <label>Width
+    <select id="width">
+      <option value="960">960</option>
+      <option value="1280" selected>1280</option>
+      <option value="1600">1600</option>
+      <option value="0">Full</option>
+    </select>
+  </label>
+  <span id="fpsCounter"></span>
+</header>
+<div id="wrap"><canvas id="cv" tabindex="0" width="1280" height="720"></canvas></div>
+<script>
+// Standalone SPIKE viewer. Connects to the local bridge (deskbridge screen-view)
+// over WebSocket. Each binary message is one JPEG frame; canvas mouse/keyboard
+// events are normalized to 0..1 and sent back as JSON control events (service 4).
+// Desired capture width/fps/quality are passed to the bridge as /ws query params,
+// which the bridge turns into the streamNegotiation header on the screen stream.
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const stat = document.getElementById('stat');
+const led = document.getElementById('led');
+const fpsEl = document.getElementById('fpsCounter');
+const ctl = document.getElementById('ctl');
+const qualitySel = document.getElementById('quality');
+const fpsSel = document.getElementById('fps');
+const widthSel = document.getElementById('width');
+
+let ws, frames = 0, last = performance.now(), reconnectTimer;
+
+function wsURL() {
+  const base = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+  const q = new URLSearchParams({ width: widthSel.value, fps: fpsSel.value, quality: qualitySel.value });
+  return base + '?' + q.toString();
+}
+
+function connect() {
+  clearTimeout(reconnectTimer);
+  if (ws) { try { ws.onclose = null; ws.close(); } catch (e) {} }
+  ws = new WebSocket(wsURL());
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => { led.classList.add('on'); stat.textContent = 'connected'; };
+  ws.onclose = () => { led.classList.remove('on'); stat.textContent = 'disconnected — retrying'; reconnectTimer = setTimeout(connect, 1500); };
+  ws.onerror = () => { stat.textContent = 'error'; };
+  ws.onmessage = async (ev) => {
+    const bmp = await createImageBitmap(new Blob([ev.data], {type: 'image/jpeg'}));
+    if (cv.width !== bmp.width || cv.height !== bmp.height) { cv.width = bmp.width; cv.height = bmp.height; }
+    ctx.drawImage(bmp, 0, 0);
+    bmp.close();
+    frames++;
+    const now = performance.now();
+    if (now - last >= 1000) { fpsEl.textContent = frames + ' fps'; frames = 0; last = now; }
+  };
+}
+// Reconnect with fresh negotiation params when a quality knob changes.
+[qualitySel, fpsSel, widthSel].forEach(el => el.addEventListener('change', connect));
+connect();
+
+function send(ev) {
+  if (!ctl.checked || !ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify(ev));
+}
+function norm(e) {
+  const r = cv.getBoundingClientRect();
+  return { x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)),
+           y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) };
+}
+cv.addEventListener('mousemove', e => { const p = norm(e); send({type:'mouse-move', x:p.x, y:p.y}); });
+cv.addEventListener('mousedown', e => { const p = norm(e); send({type:'mouse-button', x:p.x, y:p.y, button:e.button, down:true}); e.preventDefault(); });
+cv.addEventListener('mouseup',   e => { const p = norm(e); send({type:'mouse-button', x:p.x, y:p.y, button:e.button, down:false}); e.preventDefault(); });
+cv.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('wheel', e => { send({type:'scroll', dx:e.deltaX, dy:e.deltaY}); e.preventDefault(); }, {passive:false});
+cv.addEventListener('keydown', e => { send({type:'key', key:e.key, code:e.code, down:true}); e.preventDefault(); });
+cv.addEventListener('keyup',   e => { send({type:'key', key:e.key, code:e.code, down:false}); e.preventDefault(); });
+cv.addEventListener('click', () => cv.focus());
+</script>
+</body>
+</html>

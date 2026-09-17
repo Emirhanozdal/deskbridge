@@ -225,8 +225,24 @@ func runRelay(ctx context.Context, cfg relaySettings, dir string) error {
 		return err
 	}
 	defer kvm.Close()
+	// Remote-desktop spike (additive, see screen.go). The viewer side exposes two
+	// extra loopback ports: screen (framed MJPEG in) and control (framed input
+	// events out). Both open a yamux stream and write [service, role]; the peer
+	// answers service 3 by pushing frames and service 4 by injecting input.
+	screen, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", screenViewPort))
+	if err != nil {
+		return err
+	}
+	defer screen.Close()
+	control, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", controlInputPort))
+	if err != nil {
+		return err
+	}
+	defer control.Close()
 	go relayForward(files, session, 1)
 	go relayForward(kvm, session, 2)
+	go relayForwardHeader(screen, session, screenService, roleViewer)
+	go relayForwardHeader(control, session, controlService, roleViewer)
 	go func() {
 		for {
 			stream, err := session.AcceptStream()
@@ -238,6 +254,7 @@ func runRelay(ctx context.Context, cfg relaySettings, dir string) error {
 	}()
 	fmt.Println("Peer authenticated. End-to-end encrypted connection ready.")
 	fmt.Println("Files: deskbridge send-peer <file> | Remote Deskflow: 127.0.0.1:24801")
+	fmt.Printf("Remote desktop (spike): screen 127.0.0.1:%d | control 127.0.0.1:%d\n", screenViewPort, controlInputPort)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -247,6 +264,15 @@ func runRelay(ctx context.Context, cfg relaySettings, dir string) error {
 }
 
 func relayForward(listener net.Listener, session *yamux.Session, service byte) {
+	relayForwardHeader(listener, session, service)
+}
+
+// relayForwardHeader is the generalized forwarder: it writes an arbitrary header
+// (service id, optionally followed by a role/direction byte) at the head of each
+// new yamux stream, then pipes bytes both ways. Services 1/2 pass a single byte
+// (identical to the original behavior); services 3/4 pass [service, role].
+func relayForwardHeader(listener net.Listener, session *yamux.Session, header ...byte) {
+	head := append([]byte(nil), header...)
 	for {
 		local, err := listener.Accept()
 		if err != nil {
@@ -259,7 +285,7 @@ func relayForward(listener net.Listener, session *yamux.Session, service byte) {
 				return
 			}
 			defer remote.Close()
-			if _, err := remote.Write([]byte{service}); err != nil {
+			if _, err := remote.Write(head); err != nil {
 				return
 			}
 			copyRelay(local, remote)
@@ -272,6 +298,30 @@ func relayAccept(stream *yamux.Stream, fileAddress string) {
 	_ = stream.SetReadDeadline(time.Now().Add(10 * time.Second))
 	var service [1]byte
 	if _, err := io.ReadFull(stream, service[:]); err != nil {
+		return
+	}
+	// Remote-desktop services carry a second header byte (role/direction) and are
+	// not simple local-TCP dials, so they branch out before the dial path below.
+	if service[0] == screenService || service[0] == controlService {
+		var role [1]byte
+		if _, err := io.ReadFull(stream, role[:]); err != nil {
+			return
+		}
+		if service[0] == screenService {
+			// Peer requested our screen. It may send an optional negotiation frame
+			// (width/fps/quality) first; give it a short window, then fall back to
+			// defaults so non-negotiating viewers keep working.
+			_ = stream.SetReadDeadline(time.Now().Add(4 * time.Second))
+			opts := negotiateCapture(stream)
+			_ = stream.SetReadDeadline(time.Time{})
+			// Capture and push framed MJPEG until the stream closes. Bound to the
+			// stream's lifetime.
+			_ = pushScreen(context.Background(), stream, opts)
+		} else {
+			_ = stream.SetReadDeadline(time.Time{})
+			// Peer is sending absolute input events for us to inject.
+			_ = serveControlSink(stream)
+		}
 		return
 	}
 	_ = stream.SetReadDeadline(time.Time{})

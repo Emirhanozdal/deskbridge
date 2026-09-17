@@ -24,6 +24,7 @@
 #include "deskflow/ScreenException.h"
 #include "platform/MSWindowsClipboard.h"
 #include "platform/MSWindowsDesks.h"
+#include "platform/MSWindowsDropTarget.h"
 #include "platform/MSWindowsEventQueueBuffer.h"
 #include "platform/MSWindowsKeyState.h"
 #include "platform/MSWindowsScreenSaver.h"
@@ -73,6 +74,257 @@
 #endif
 
 //
+// DeskBridge cross-screen drag-and-drop (OLE) helpers
+//
+// Source side (this machine is where the user starts dragging a file): the file
+// name is captured with the proven Synergy/Input Leap technique implemented in
+// MSWindowsDropTarget + extractDraggingFilename() below (a hidden drop window is
+// teleported under the cursor and the drag is forced to drop onto it).
+//
+// Target side (this machine received the file bytes): the synthetic OLE drag
+// below (createHDrop / FileDataObject / FileDropSource / runDragThread) drops
+// the received file(s) into whatever window the user releases over. NOTE: no
+// upstream GPL project ships a Windows receive-as-OLE-drag implementation
+// (Synergy/Barrier/Input Leap all leave fakeDraggingFiles() empty and rely on
+// the file simply being written into the drop-target folder). This synthetic
+// drag is therefore DeskBridge-original and has NOT been validated on real
+// Windows hardware; it must be exercised on a Windows box before shipping.
+//
+namespace {
+
+// Hard upper bound on how long a synthetic drag may run before it is forcibly
+// cancelled, so a lost pointer-release can never leave DoDragDrop() (and the
+// mouse button) stuck. Mirrors XWindowsScreen's xdndCheckDeadline safety net,
+// but generous because a real user is dragging across a physical link.
+constexpr double kDragTimeoutSeconds = 30.0;
+
+// Build a CF_HDROP HGLOBAL from a list of absolute local file paths.
+// Returns nullptr if no usable path was supplied. Ownership passes to the
+// data object that serves it.
+HGLOBAL createHDrop(const DragFileList &files)
+{
+  std::vector<std::wstring> wide;
+  size_t chars = 0;
+  for (const auto &f : files) {
+    const std::string &p = f.getFilename();
+    if (p.empty()) {
+      continue;
+    }
+    const int n = MultiByteToWideChar(CP_UTF8, 0, p.c_str(), -1, nullptr, 0);
+    if (n <= 1) {
+      continue;
+    }
+    std::wstring w(static_cast<size_t>(n - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, p.c_str(), -1, w.data(), n);
+    chars += w.size() + 1; // path + its null terminator
+    wide.push_back(std::move(w));
+  }
+  if (wide.empty()) {
+    return nullptr;
+  }
+  chars += 1; // final extra null: the list is double-null terminated
+
+  const SIZE_T bytes = sizeof(DROPFILES) + chars * sizeof(wchar_t);
+  HGLOBAL handle = GlobalAlloc(GHND, bytes);
+  if (handle == nullptr) {
+    return nullptr;
+  }
+
+  auto *drop = static_cast<DROPFILES *>(GlobalLock(handle));
+  drop->pFiles = sizeof(DROPFILES);
+  drop->pt.x = 0;
+  drop->pt.y = 0;
+  drop->fNC = FALSE;
+  drop->fWide = TRUE; // paths are UTF-16
+  auto *dst = reinterpret_cast<wchar_t *>(reinterpret_cast<BYTE *>(drop) + sizeof(DROPFILES));
+  for (const auto &w : wide) {
+    memcpy(dst, w.c_str(), (w.size() + 1) * sizeof(wchar_t));
+    dst += w.size() + 1;
+  }
+  *dst = L'\0'; // double-null terminate
+  GlobalUnlock(handle);
+  return handle;
+}
+
+// Minimal IDataObject exposing exactly one CF_HDROP (the received files).
+class FileDataObject : public IDataObject
+{
+public:
+  explicit FileDataObject(HGLOBAL hdrop) : m_hdrop(hdrop)
+  {
+  }
+  ~FileDataObject()
+  {
+    if (m_hdrop != nullptr) {
+      GlobalFree(m_hdrop);
+    }
+  }
+
+  // IUnknown
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppv) override
+  {
+    if (ppv == nullptr) {
+      return E_INVALIDARG;
+    }
+    if (riid == IID_IUnknown || riid == IID_IDataObject) {
+      *ppv = static_cast<IDataObject *>(this);
+      AddRef();
+      return S_OK;
+    }
+    *ppv = nullptr;
+    return E_NOINTERFACE;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override
+  {
+    return ++m_ref;
+  }
+  ULONG STDMETHODCALLTYPE Release() override
+  {
+    const ULONG r = --m_ref;
+    if (r == 0) {
+      delete this;
+    }
+    return r;
+  }
+
+  // IDataObject
+  HRESULT STDMETHODCALLTYPE GetData(FORMATETC *fmt, STGMEDIUM *med) override
+  {
+    if (fmt == nullptr || med == nullptr) {
+      return E_INVALIDARG;
+    }
+    if (fmt->cfFormat != CF_HDROP || (fmt->tymed & TYMED_HGLOBAL) == 0 || m_hdrop == nullptr) {
+      return DV_E_FORMATETC;
+    }
+    // hand the caller its own copy so ownership is clean
+    const SIZE_T size = GlobalSize(m_hdrop);
+    HGLOBAL copy = GlobalAlloc(GHND, size);
+    if (copy == nullptr) {
+      return E_OUTOFMEMORY;
+    }
+    void *src = GlobalLock(m_hdrop);
+    void *dst = GlobalLock(copy);
+    memcpy(dst, src, size);
+    GlobalUnlock(copy);
+    GlobalUnlock(m_hdrop);
+    med->tymed = TYMED_HGLOBAL;
+    med->hGlobal = copy;
+    med->pUnkForRelease = nullptr;
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC *, STGMEDIUM *) override
+  {
+    return E_NOTIMPL;
+  }
+  HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC *fmt) override
+  {
+    if (fmt == nullptr) {
+      return E_INVALIDARG;
+    }
+    return (fmt->cfFormat == CF_HDROP && (fmt->tymed & TYMED_HGLOBAL) != 0) ? S_OK : DV_E_FORMATETC;
+  }
+  HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC *, FORMATETC *out) override
+  {
+    if (out != nullptr) {
+      out->ptd = nullptr;
+    }
+    return E_NOTIMPL;
+  }
+  HRESULT STDMETHODCALLTYPE SetData(FORMATETC *, STGMEDIUM *, BOOL) override
+  {
+    return E_NOTIMPL;
+  }
+  HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD, IEnumFORMATETC **out) override
+  {
+    // Minimal single-format data object: we don't vend a format enumerator.
+    // Drop targets driven by DoDragDrop rely on QueryGetData/GetData (both
+    // implemented above), so E_NOTIMPL here is safe and avoids depending on
+    // SHCreateStdEnumFormatEtc, which isn't declared on all Windows SDKs.
+    if (out != nullptr) {
+      *out = nullptr;
+    }
+    return E_NOTIMPL;
+  }
+  HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC *, DWORD, IAdviseSink *, DWORD *) override
+  {
+    return OLE_E_ADVISENOTSUPPORTED;
+  }
+  HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override
+  {
+    return OLE_E_ADVISENOTSUPPORTED;
+  }
+  HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA **) override
+  {
+    return OLE_E_ADVISENOTSUPPORTED;
+  }
+
+private:
+  std::atomic<ULONG> m_ref{1};
+  HGLOBAL m_hdrop;
+};
+
+// IDropSource that follows the relayed pointer/button: the drag ends with a
+// drop when the (relayed) left button is released, and is cancelled on Escape,
+// on an external cancel request, or after kDragTimeoutSeconds.
+class FileDropSource : public IDropSource
+{
+public:
+  explicit FileDropSource(std::atomic<bool> *cancel) : m_cancel(cancel), m_start(ARCH->time())
+  {
+  }
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppv) override
+  {
+    if (ppv == nullptr) {
+      return E_INVALIDARG;
+    }
+    if (riid == IID_IUnknown || riid == IID_IDropSource) {
+      *ppv = static_cast<IDropSource *>(this);
+      AddRef();
+      return S_OK;
+    }
+    *ppv = nullptr;
+    return E_NOINTERFACE;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override
+  {
+    return ++m_ref;
+  }
+  ULONG STDMETHODCALLTYPE Release() override
+  {
+    const ULONG r = --m_ref;
+    if (r == 0) {
+      delete this;
+    }
+    return r;
+  }
+
+  HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL escapePressed, DWORD keyState) override
+  {
+    if (escapePressed || (m_cancel != nullptr && m_cancel->load()) ||
+        (ARCH->time() - m_start) > kDragTimeoutSeconds) {
+      return DRAGDROP_S_CANCEL;
+    }
+    // the relayed left-button release completes the drop
+    if ((keyState & MK_LBUTTON) == 0) {
+      return DRAGDROP_S_DROP;
+    }
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) override
+  {
+    return DRAGDROP_S_USEDEFAULTCURSORS;
+  }
+
+private:
+  std::atomic<ULONG> m_ref{1};
+  std::atomic<bool> *m_cancel;
+  double m_start;
+};
+
+} // namespace
+
+//
 // MSWindowsScreen
 //
 
@@ -119,6 +371,17 @@ MSWindowsScreen::MSWindowsScreen(bool isPrimary, bool useHooks, IEventQueue *eve
     }
 
     OleInitialize(0);
+
+    // Source-side drag capture (proven Synergy/Input Leap technique): a small
+    // transparent, accept-files window registered as an OLE drop target. When a
+    // file drag is handed to the peer, extractDraggingFilename() teleports this
+    // window under the cursor and forces the drag to drop onto it so the dragged
+    // path can be read from CF_HDROP.
+    m_dropWindow = createDropWindow(m_class, L"DeskBridgeDropWindow");
+    m_dropTarget = new MSWindowsDropTarget();
+    if (const HRESULT hr = RegisterDragDrop(m_dropWindow, m_dropTarget); FAILED(hr)) {
+      LOG_WARN("drag: RegisterDragDrop failed (0x%08lx); source-side file drag disabled", hr);
+    }
   } catch (...) {
     delete m_keyState;
     delete m_desks;
@@ -148,6 +411,18 @@ MSWindowsScreen::~MSWindowsScreen()
   delete m_keyState;
   delete m_desks;
   delete m_screensaver;
+
+  // tear down the source-side OLE drop target/window
+  if (m_dropWindow != nullptr) {
+    RevokeDragDrop(m_dropWindow);
+  }
+  if (m_dropTarget != nullptr) {
+    m_dropTarget->Release();
+    m_dropTarget = nullptr;
+  }
+  destroyWindow(m_dropWindow);
+  m_dropWindow = nullptr;
+
   destroyWindow(m_window);
   destroyClass(m_class);
 
@@ -213,6 +488,9 @@ void MSWindowsScreen::disable()
     // enable special key sequences on win95 family
     enableSpecialKeys(true);
   }
+
+  // tear down any in-progress synthetic (target-side) drag
+  stopDragThread();
 
   // tell key state
   m_keyState->disable();
@@ -807,6 +1085,23 @@ HWND MSWindowsScreen::createWindow(ATOM windowClass, const wchar_t *name) const
   return window;
 }
 
+HWND MSWindowsScreen::createDropWindow(ATOM windowClass, const wchar_t *name) const
+{
+  // Ported from input-leap MSWindowsScreen::createDropWindow. WS_EX_ACCEPTFILES
+  // + registration as an OLE drop target lets this small transparent, top-most
+  // window capture the CF_HDROP of a drag forced onto it (see
+  // extractDraggingFilename). It is normally hidden and only shown briefly.
+  HWND window = CreateWindowEx(
+      WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_ACCEPTFILES, MAKEINTATOM(windowClass), name, WS_POPUP, 0, 0,
+      m_dropWindowSize, m_dropWindowSize, nullptr, nullptr, s_windowInstance, nullptr
+  );
+  if (window == nullptr) {
+    LOG_ERR("failed to create drop window: %d", GetLastError());
+    throw ScreenOpenFailureException();
+  }
+  return window;
+}
+
 void MSWindowsScreen::destroyWindow(HWND hwnd) const
 {
   if (hwnd != nullptr) {
@@ -1194,6 +1489,16 @@ bool MSWindowsScreen::onMouseButton(WPARAM wParam, LPARAM lParam)
     m_buttons[button] = pressed;
   }
 
+  // Cross-screen file drag (source side): a fresh left-button press starts a new
+  // potential drag, so clear any stale captured drag; a release ends dragging.
+  if (button == kButtonLeft) {
+    m_draggingStarted = false;
+    if (pressed) {
+      m_draggingFilename.clear();
+      m_draggingFileList.clear();
+    }
+  }
+
   // ignore message if posted prior to last mark change
   if (!ignore()) {
     KeyModifierMask mask = m_keyState->getActiveModifiers();
@@ -1242,6 +1547,14 @@ bool MSWindowsScreen::onMouseMove(int32_t mx, int32_t my)
   saveMousePosition(mx, my);
 
   if (m_isOnScreen) {
+    // Cross-screen file drag (source side): a left-button-held motion while the
+    // cursor is on this screen means the user is dragging something. Mark it so
+    // the server/client layer knows to hand the drag to the peer at the edge.
+    // Proven Synergy/Input Leap detection (see upstream onMouseMove).
+    if (m_buttons[kButtonLeft]) {
+      m_draggingStarted = true;
+    }
+
     // motion on primary screen
     sendEvent(EventTypes::PrimaryScreenMotionOnPrimary, MotionInfo::alloc(m_xCursor, m_yCursor));
   } else {
@@ -1693,6 +2006,200 @@ void MSWindowsScreen::fakeLocalKey(KeyButton button, bool press) const
   input.ki.time = 0;
   input.ki.dwExtraInfo = 0;
   SendInput(1, &input, sizeof(input));
+}
+
+//
+// MSWindowsScreen -- DeskBridge cross-screen drag-and-drop (OLE)
+//
+// Source side (isDraggingStarted / getDraggingFilename / cancelLocalDrag) uses
+// the proven Synergy/Input Leap OLE capture technique (extractDraggingFilename +
+// MSWindowsDropTarget). The target-side synthetic drag (fakeDraggingFiles) is
+// DeskBridge-original and still needs validation on real Windows hardware; see
+// the note in the anonymous namespace at the top of this file.
+//
+
+bool MSWindowsScreen::isDraggingStarted()
+{
+  return m_draggingStarted;
+}
+
+void MSWindowsScreen::extractDraggingFilename()
+{
+  // Proven Synergy/Input Leap technique (ported from input-leap
+  // src/lib/platform/MSWindowsScreen.cpp getDraggingFilename): teleport the tiny
+  // transparent accept-files drop window under the cursor, then force the
+  // in-progress OLE drag to drop onto it (inject Escape + release left button).
+  // MSWindowsDropTarget::DragEnter records the CF_HDROP path, which we poll for.
+  //
+  // Injecting Escape + button-up ALSO ends the local OS drag, so this doubles as
+  // the "cancel the local drag" step of the handoff. Runs on the event thread
+  // and blocks up to ~0.5s while polling; this mirrors upstream behaviour.
+  //
+  // Idempotent: the server/client layer samples the drag more than once around a
+  // handoff (cancelLocalDrag + getDraggingFileList / getDraggingFilename). Once a
+  // name has been captured, don't re-inject and re-poll (the drag is already
+  // gone, so a second attempt would only clear a good capture).
+  if (!m_draggingStarted || !m_draggingFilename.empty()) {
+    return;
+  }
+
+  m_dropTarget->clearDraggingFilename();
+  m_draggingFilename.clear();
+
+  const int halfSize = m_dropWindowSize / 2;
+  int32_t xPos = m_isPrimary ? m_xCursor : m_xCenter;
+  int32_t yPos = m_isPrimary ? m_yCursor : m_yCenter;
+  xPos = (xPos - halfSize) < 0 ? 0 : xPos - halfSize;
+  yPos = (yPos - halfSize) < 0 ? 0 : yPos - halfSize;
+  SetWindowPos(m_dropWindow, HWND_TOPMOST, xPos, yPos, m_dropWindowSize, m_dropWindowSize, SWP_SHOWWINDOW);
+
+  // A tiny sleep here makes the DragEnter event on m_dropWindow trigger much
+  // more consistently (per upstream comment).
+  ARCH->sleep(0.05);
+  fakeKeyDown(kKeyEscape, 8192, 1, "");
+  fakeKeyUp(1);
+  fakeMouseButton(kButtonLeft, false);
+
+  std::string filename;
+  const double timeout = ARCH->time() + 0.5;
+  while (ARCH->time() < timeout) {
+    ARCH->sleep(0.05);
+    filename = m_dropTarget->getDraggingFilename();
+    if (!filename.empty()) {
+      break;
+    }
+  }
+
+  ShowWindow(m_dropWindow, SW_HIDE);
+
+  if (!filename.empty()) {
+    m_draggingFilename = filename;
+    m_draggingFileList.clear();
+    m_draggingFileList.emplace_back(filename, 0);
+    LOG_INFO("drag: captured dragged file: %s", filename.c_str());
+  } else {
+    LOG_ERR("drag: failed to get drag file name from OLE");
+  }
+}
+
+std::string MSWindowsScreen::getDraggingFilename()
+{
+  // If the handoff already captured the name (via cancelLocalDrag ->
+  // extractDraggingFilename), return it; otherwise capture it now.
+  if (m_draggingFilename.empty()) {
+    extractDraggingFilename();
+  }
+  return m_draggingFilename;
+}
+
+DragFileList MSWindowsScreen::getDraggingFileList()
+{
+  // The proven capture path is single-file; if nothing is cached yet, trigger a
+  // capture so callers that only use this accessor still get the file. The
+  // server/client layer also falls back to getDraggingFilename() when this is
+  // empty (see Server::sendDragInfoToClient / Client::sendDragToServer).
+  if (m_draggingFileList.empty() && m_draggingFilename.empty()) {
+    extractDraggingFilename();
+  }
+  return m_draggingFileList;
+}
+
+const std::string &MSWindowsScreen::getDropTarget() const
+{
+  // Ported from input-leap getDropTarget: default to the user's Desktop when no
+  // explicit drop directory has been set.
+  if (m_dropTargetPath.empty()) {
+    wchar_t desktopPath[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_DESKTOPDIRECTORY, nullptr, 0, desktopPath))) {
+      const int n = WideCharToMultiByte(CP_UTF8, 0, desktopPath, -1, nullptr, 0, nullptr, nullptr);
+      if (n > 1) {
+        std::string s(static_cast<size_t>(n - 1), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, desktopPath, -1, s.data(), n, nullptr, nullptr);
+        m_dropTargetPath = std::move(s);
+        LOG_INFO("using desktop for drop target: %s", m_dropTargetPath.c_str());
+      }
+    } else {
+      LOG_ERR("failed to get desktop path, no drop target available, error=%d", GetLastError());
+    }
+  }
+  return m_dropTargetPath;
+}
+
+void MSWindowsScreen::setDropTarget(const std::string &target)
+{
+  m_dropTargetPath = target;
+}
+
+void MSWindowsScreen::cancelLocalDrag()
+{
+  // End the local OS drag on this (source) machine after its files have been
+  // handed to the peer, so the file is not also dropped/moved here. In our
+  // handoff order the server calls this just before sampling getDraggingFilename
+  // (see Server::switchScreen), so we capture the dragged name here (which also
+  // ends the drag via the injected Escape + button-up) and keep it cached, and
+  // deliberately keep m_draggingStarted true so the subsequent isDraggingStarted
+  // sample still fires the handoff.
+  if (m_draggingStarted) {
+    extractDraggingFilename();
+  }
+}
+
+void MSWindowsScreen::fakeDraggingFiles(const DragFileList &fileList)
+{
+  // Target side: start a synthetic OLE drag carrying the received file(s) under
+  // the (relayed) pointer, so they drop into whatever window the user releases
+  // over. Equivalent to XWindowsScreen::fakeDraggingFiles (XDND source) and the
+  // macOS drop path.
+  if (fileList.empty()) {
+    return;
+  }
+  // never run two synthetic drags at once
+  stopDragThread();
+  m_dragCancel = false;
+  m_dragActive = true;
+  m_dragThread = std::thread(&MSWindowsScreen::runDragThread, this, fileList);
+  LOG_INFO("drag: started synthetic drag of %zu file(s)", fileList.size());
+}
+
+void MSWindowsScreen::runDragThread(DragFileList files)
+{
+  // DoDragDrop() is a blocking modal loop and needs its own OLE (STA) apartment,
+  // so it runs on this dedicated worker thread rather than the input loop.
+  const HRESULT init = OleInitialize(nullptr);
+
+  HGLOBAL hdrop = createHDrop(files);
+  if (hdrop != nullptr) {
+    auto *data = new FileDataObject(hdrop); // owns hdrop
+    auto *source = new FileDropSource(&m_dragCancel);
+    DWORD effect = 0;
+    const HRESULT hr = DoDragDrop(data, source, DROPEFFECT_COPY | DROPEFFECT_MOVE, &effect);
+    if (hr == DRAGDROP_S_DROP) {
+      LOG_INFO("drag: synthetic drop completed (effect=0x%lx)", effect);
+    } else if (hr == DRAGDROP_S_CANCEL) {
+      LOG_INFO("drag: synthetic drag cancelled");
+    } else {
+      LOG_DEBUG("drag: DoDragDrop returned 0x%08lx", hr);
+    }
+    data->Release();
+    source->Release();
+  } else {
+    LOG_WARN("drag: could not build CF_HDROP payload; synthetic drag aborted");
+  }
+
+  if (SUCCEEDED(init)) {
+    OleUninitialize();
+  }
+  m_dragActive = false;
+}
+
+void MSWindowsScreen::stopDragThread()
+{
+  if (m_dragThread.joinable()) {
+    m_dragCancel = true; // FileDropSource::QueryContinueDrag will cancel
+    m_dragThread.join();
+  }
+  m_dragActive = false;
+  m_dragCancel = false;
 }
 
 //

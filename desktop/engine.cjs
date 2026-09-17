@@ -6,6 +6,7 @@ function resolveEngine(resources, override, platform = process.platform) {
     override,
     path.join(resources, 'DeskBridge Input.app', 'Contents', 'MacOS', 'deskbridge-input'),
     path.join(resources, 'deskbridge-input'),
+    ...(platform === 'win32' ? [path.join(resources, 'deskbridge-input.exe')] : []),
     ...(platform === 'darwin' ? ['/Applications/Deskflow.app/Contents/MacOS/deskflow-core'] : [])
   ].filter(Boolean);
   return candidates.find(candidate => {

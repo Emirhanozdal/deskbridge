@@ -1,0 +1,122 @@
+name: Windows desktop
+
+# Mirrors .github/workflows/linux-desktop.yml, but for a Windows node: MSVC +
+# CMake/Ninja build of the embedded DeskBridge input engine (deskflow-core ->
+# deskbridge-input.exe), the Go relay (deskbridge.exe), and an electron-builder
+# NSIS installer that embeds both, exactly like the mac/linux builds embed them.
+#
+# There is no apt/publish step (Windows has no apt); the installer is uploaded
+# as a build artifact only.
+#
+# UNTESTED: authored on macOS against the Linux workflow and engine/src
+# CMakeLists.txt. The OpenSSL/Qt discovery on the Windows runner is the most
+# likely thing to need adjustment on a first real run (see the comments below).
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "feature/**"
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        shell: bash
+        # single source of truth for the version, same file the Linux build reads
+        run: echo "VERSION=$(awk '/^Version:/{print $2; exit}' packaging/linux/control)" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      # MSVC dev environment: sets cl.exe, ninja discovery, and VSCMD_ARG_TGT_ARCH
+      # which engine/src/CMakeLists.txt keys off of to select the build arch.
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+
+      # Qt6 for the engine (CMake requires Core/Widgets/Network >= 6.4.2 in
+      # DESKBRIDGE_ENGINE_ONLY mode) plus windeployqt on PATH, which the engine
+      # CMake insists on locating for WIN32 builds. This is the Windows analogue
+      # of the Linux job's `apt-get install qt6-base-dev qt6-tools-dev`.
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          # Qt 6.8 LTS: the runner's MSVC (14.5x) STL dropped the <stdext>
+          # namespace that Qt 6.4.2's qvarlengtharray.h still referenced
+          # ("error C3861: 'stdext' identifier not found"). 6.8 fixed this and
+          # still satisfies the engine CMake's >= 6.4.2 requirement.
+          version: "6.8.2"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: ""
+          cache: true
+
+      # OpenSSL 3.x is required by the engine (REQUIRED_OPENSSL_VERSION 3.0).
+      # windows-latest ships an OpenSSL under C:\Program Files\OpenSSL; expose it
+      # to CMake. If find_package(OpenSSL) still fails on a real run, install a
+      # known-good build here (e.g. `choco install openssl`) and point
+      # OPENSSL_ROOT_DIR at it.
+      - name: Locate OpenSSL
+        shell: bash
+        run: |
+          if [ -d "/c/Program Files/OpenSSL" ]; then
+            echo "OPENSSL_ROOT_DIR=C:\\Program Files\\OpenSSL" >> "$GITHUB_ENV"
+          elif [ -d "/c/Program Files/OpenSSL-Win64" ]; then
+            echo "OPENSSL_ROOT_DIR=C:\\Program Files\\OpenSSL-Win64" >> "$GITHUB_ENV"
+          fi
+
+      - name: Test
+        shell: bash
+        run: |
+          go test ./...
+          npm ci --prefix desktop
+          npm test --prefix desktop
+
+      - name: Build relay and input engine
+        shell: bash
+        run: |
+          mkdir -p build work/windows-engine
+          go build -o build/deskbridge.exe ./cmd/deskbridge
+          cmake -S engine/src -B work/windows-engine -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DDESKBRIDGE_ENGINE_ONLY=ON
+          cmake --build work/windows-engine --target deskflow-core -j 4
+
+      # electron-builder is fetched on demand via npx so it is not added to
+      # package.json dependencies (keeps the lockfile in sync for `npm ci`).
+      # It reads the `build`/`win`/`nsis` block from desktop/package.json, which
+      # embeds ..\build\deskbridge.exe and the engine as extraResources.
+      - name: Package desktop (NSIS installer)
+        shell: bash
+        env:
+          # electron-builder reads the version from package.json; keep the deb
+          # version as the single source of truth by overriding it here.
+          npm_config_yes: "true"
+        run: |
+          npx electron-builder@26 --win nsis --x64 --projectDir desktop \
+            -c.extraMetadata.version="${VERSION}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deskbridge-windows-x64
+          path: |
+            work/dist-win/DeskBridge-Setup-*.exe
+            work/dist-win/DeskBridge-Setup-*.exe.blockmap

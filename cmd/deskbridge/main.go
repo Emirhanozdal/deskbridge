@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -117,6 +118,10 @@ func (c *cli) run(args []string) int {
 		err = c.cmdAdvertise(rest[1:])
 	case "scan":
 		err = c.cmdScan(rest[1:])
+	case "screen-view":
+		err = c.cmdScreenView(rest[1:])
+	case "screen-test":
+		err = c.cmdScreenTest(rest[1:])
 	case "diagnose":
 		err = c.cmdDiagnose()
 	case "doctor":
@@ -156,6 +161,8 @@ Commands:
   send <file>         send a file over HTTP
   advertise <device>  broadcast this device on LAN
   scan                scan LAN broadcasts
+  screen-view         open the remote-desktop viewer bridge (spike)
+  screen-test         loopback self-test of the remote-desktop video pipe
   diagnose            show local diagnostics
   doctor              alias for diagnose`)
 }
@@ -1048,10 +1055,13 @@ func xdgDownloadDir(config, home string) string {
 		if dir == "$HOME" {
 			dir = home
 		} else if strings.HasPrefix(dir, "$HOME/") {
-			dir = filepath.Join(home, strings.TrimPrefix(dir, "$HOME/"))
+			// XDG user-dirs.dirs is always POSIX (forward-slash); use path, not
+			// filepath, so this parses identically on Windows CI (where filepath
+			// would use backslashes and treat a leading "/" as non-absolute).
+			dir = path.Join(home, strings.TrimPrefix(dir, "$HOME/"))
 		}
-		if filepath.IsAbs(dir) && !strings.Contains(dir, "$") {
-			return filepath.Clean(dir)
+		if path.IsAbs(dir) && !strings.Contains(dir, "$") {
+			return path.Clean(dir)
 		}
 	}
 	return ""

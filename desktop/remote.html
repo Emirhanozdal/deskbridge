@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'none'">
+<title>DeskBridge · Uzak Ekran</title>
+<link rel="stylesheet" href="remote.css">
+</head>
+<body>
+<header>
+  <b>Uzak Ekran</b>
+  <span class="dot" id="led"></span>
+  <span id="stat">baglaniyor…</span>
+  <label><input type="checkbox" id="ctl" checked> Girdi gonder</label>
+  <span class="spacer"></span>
+  <label>Kalite
+    <select id="quality" title="JPEG kalitesi (dusuk sayi = daha net)">
+      <option value="4">Yuksek</option>
+      <option value="7" selected>Orta</option>
+      <option value="12">Dusuk</option>
+      <option value="18">Cok dusuk</option>
+    </select>
+  </label>
+  <label>FPS
+    <select id="fps">
+      <option value="6">6</option>
+      <option value="12" selected>12</option>
+      <option value="20">20</option>
+      <option value="30">30</option>
+    </select>
+  </label>
+  <label>Cozunurluk
+    <select id="width" title="Yakalama genisligi">
+      <option value="960">960</option>
+      <option value="1280" selected>1280</option>
+      <option value="1600">1600</option>
+      <option value="0">Tam</option>
+    </select>
+  </label>
+  <span id="fpsCounter"></span>
+</header>
+<div id="wrap"><canvas id="cv" tabindex="0" width="1280" height="720"></canvas></div>
+<script src="remote.js"></script>
+</body>
+</html>

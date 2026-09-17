@@ -39,6 +39,7 @@ function render(next){state=next;if(!dirty){direction=state.layout.direction;pee
  $('clipboard-note').textContent=state.clipboardSupported?'Kopyalanan dosyalar eslestirilmis cihaza gonderilir.':'Karsi cihazda DeskBridge Desktop 0.3.0 veya ustu gerekli.';
  $('choose-files').disabled=!state.connected;$('transfer-add').disabled=!state.connected;
  $('file-state').textContent=state.connected?'Bagli cihaza gonder':'Cihaz baglantisi bekleniyor';
+ const remoteBtn=$('open-remote');if(remoteBtn){remoteBtn.disabled=!state.connected;$('remote-state').textContent=state.connected?(peer+' ekranini goruntule ve kontrol et'):'Cihaz baglantisi bekleniyor';}
  $('count').textContent=state.transfers.length;$('last-transfer').textContent=state.transfers[0]?.name||'Henuz aktarim yok';
  const list=$('transfer-list');list.replaceChildren();
  if(!state.transfers.length){const e=document.createElement('div');e.className='empty';e.textContent='Henuz aktarim yok';list.append(e);}
@@ -60,6 +61,7 @@ $('peer-select').onchange=e=>{peer=e.target.value;selectPosition(direction);$('p
 $('apply').onclick=async()=>{const result=await action(api.applyLayout({peer,direction}));if(!result?.error){dirty=false;$('apply').disabled=true;}};
 $('choose-files').onclick=$('transfer-add').onclick=()=>action(api.chooseFiles());
 $('open-folder').onclick=()=>action(api.folder());$('reconnect').onclick=()=>action(api.connect());
+$('open-remote').onclick=()=>action(api.openRemote({width:1280,fps:12,quality:7}));
 $('clipboard-toggle').onchange=e=>action(api.configure({clipboard:e.target.checked}));$('autostart-toggle').onchange=e=>action(api.configure({autoStart:e.target.checked}));
 $('generate-code').onclick=async()=>{$('pair-code').value=(await api.generatePairing()).code;};
 $('relay-setup').onclick=()=>action(api.openRelaySetup());
